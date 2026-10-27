@@ -3537,10 +3537,14 @@ function confirmarGenerarMinuta() {
 // ═══════════════════════════════════════════════════════════════════
 // DOCUMENTOS (minuta / solicitud) — piezas comunes por marca (Bloque C, index_84)
 // ═══════════════════════════════════════════════════════════════════
-// Cabecera: logo de la marca activa (SVG en Sensum/Terrazas; wordmark tipográfico en Qiudad)
-// + título del documento y fecha. Los colores salen de los tokens --brand-* ya aplicados.
-function headerDocumentoMarca(titulo, fecha, extraMeta) {
-  const b = marcaDe();
+// Cabecera: logo de la marca del proyecto (SVG en Sensum/Terrazas; wordmark tipográfico en Qiudad)
+// + título del documento y fecha.
+// proyectoId (index_87): marca EXPLÍCITA del documento. Sin él cae en el proyecto activo, que
+// es lo correcto en el camino vivo (cotizador) y lo INCORRECTO al reimprimir desde la bandeja:
+// una solicitud de Terrazas abierta parado en Qiudad salía con logo de Qiudad. Los colores y la
+// tipografía NO vienen de acá: son tokens heredados — ver estiloMarcaProyecto().
+function headerDocumentoMarca(titulo, fecha, extraMeta, proyectoId) {
+  const b = marcaDe(proyectoId);
   const logo = b.logoSVG
     ? `<div class="minuta-logo-svg">${b.logoSVG}</div>`
     : `<div class="minuta-logo-main">${b.nombre}</div><div class="minuta-logo-sub">${String(b.tagline || '').toUpperCase()}</div>`;
@@ -3555,19 +3559,46 @@ function headerDocumentoMarca(titulo, fecha, extraMeta) {
 }
 // Pie común a las tres marcas: logo del desarrollador en mono. La razón social se imprime
 // solo si la marca la declara (BRANDS[id].razonSocial) — hoy Qiudad (la que ya la mostraba).
-function pieDesarrollador() {
-  const b = marcaDe();
+function pieDesarrollador(proyectoId) {
+  const b = marcaDe(proyectoId);
   return `
       <div class="minuta-footer-dev">
         <div class="minuta-footer-logo">${LOGO_PLAZAVERDE_MONO}</div>
         <div class="minuta-footer-txt">Desarrolla <strong>Grupo Plazaverde</strong>${b.razonSocial ? ' · ' + b.razonSocial : ''}</div>
       </div>`;
 }
+
+// Estilo inline con los tokens de marca de un proyecto (index_87).
+// aplicarMarca() escribe los --brand-* sobre documentElement, así que TODA la interfaz lleva la
+// piel del proyecto ACTIVO. Eso es correcto mientras se cotiza y es confuso en cualquier vista
+// que muestre objetos de otro proyecto: la tarjeta de una solicitud de Terrazas se pintaba con
+// el verde de Qiudad, y el documento impreso salía con paleta y tipografía del activo.
+// Las custom properties heredan, así que setearlas en el div raíz de un subárbol lo reencapsula
+// sin tocar :root ni el resto de la pantalla. Ningún CSS se cuelga de data-marca (solo un test),
+// de modo que el override no se filtra.
+function estiloMarcaProyecto(id) {
+  const b = marcaDe(id);
+  return Object.keys(b.tokens || {}).map(k => '--' + k + ':' + b.tokens[k]).join(';');
+}
+
+// Leyenda de vencimiento de refuerzos (index_87). Un solo texto con un fragmento opcional:
+// en un documento dice "el mes indicado en este documento"; en pantalla no hay documento al
+// que referirse, así que el fragmento se omite. Se congela en la solicitud (documento.leyendaRefuerzos)
+// para que una reimpresión futura conserve la redacción que firmó el cliente.
+function leyendaRefuerzosTexto(enDocumento) {
+  return 'El vencimiento de los refuerzos será el mes indicado'
+    + (enDocumento ? ' en este documento' : '')
+    + ' o el mes de posesión efectiva, lo que ocurra primero.';
+}
 // Detalle de superficies de una unidad según las superficies DECLARADAS por el proyecto
 // (cfg.superficies), no un set fijo de Qiudad: Sensum muestra su terraza, Terrazas su descubierto.
 // Etiqueta = nombre de columna del Excel sin el prefijo "m2 ". Devuelve { detalle, total }.
-function detalleSuperficieUnidad(u) {
-  const tabla = proyectoCfg().superficies || {};
+// cfg (index_87): config de proyecto EXPLÍCITA. Sin ella cae en el proyecto activo, que al
+// reimprimir desde la bandeja sería el equivocado. En el camino congelado no se llama: el
+// detalle ya viene armado en el snapshot (depende de la unidad Y de la tabla del proyecto,
+// y las dos pueden haber cambiado desde que el cliente firmó).
+function detalleSuperficieUnidad(u, cfg) {
+  const tabla = ((cfg || proyectoCfg()) || {}).superficies || {};
   const claves = Object.keys(tabla).length ? Object.keys(tabla) : ['m2subsuelo','m2cub','m2semi','m2desc'];
   const label = (k) => {
     const col = (tabla[k] && tabla[k].columna) || k;
@@ -3656,6 +3687,10 @@ function generarMinuta() {
 
   const anticipo   = planState.anticipo !== null ? planState.anticipo : anticoDefaultPaquete(paquete);
   const refuerzos  = planState.refuerzos || [];
+  // Los que efectivamente sobreviven al motor (index_87). normRefuerzos descarta los de mes >
+  // nObraVigente, así que la leyenda se emite contra lo que el documento realmente muestra,
+  // no contra lo que el vendedor cargó.
+  const refuerzosNorm = normRefuerzos(refuerzos, 0);
 
   const calc = (planFn) => hayPaquete
     ? calcPlanPaquete(paquete, anticipo, refuerzos, planFn)
@@ -3785,7 +3820,8 @@ function generarMinuta() {
     : filasComparativa;
 
   // Datos de unidad — superficies según las declaradas por el proyecto (Bloque C)
-  const { detalle: detalleSuperficie, total: m2total } = detalleSuperficieUnidad(u);
+  // Camino vivo: el proyecto activo ES el de la unidad que se está cotizando.
+  const { detalle: detalleSuperficie, total: m2total } = detalleSuperficieUnidad(u, proyectoCfg());
 
   // Complementos
   const complementos = [];
@@ -3859,6 +3895,7 @@ function generarMinuta() {
           </thead>
           ${filasConGIA}
         </table>
+        ${refuerzosNorm.length > 0 ? `<div style="font-size:9pt;color:#555;margin-top:6px;">${leyendaRefuerzosTexto(true)}</div>` : ''}
       </div>
       ${cuadroMarcha}
       ${pieDesarrollador()}
@@ -4203,6 +4240,21 @@ async function _persistirYImprimirSolicitud(datos) {
     vendedorNombre: datos.vendedor,
     plan: planSnapshot,
     observaciones: datos.observaciones,
+    // Mitad TEXTUAL del congelado (index_87). El planSnapshot de arriba congela los números;
+    // esto congela lo que en el papel es texto y deriva de estado que puede cambiar después:
+    //   - detalleSuperficie: depende de la unidad Y de la tabla `superficies` del proyecto.
+    //   - leyendaRefuerzos: si mañana cambia la redacción, la solicitud ya firmada conserva
+    //     la suya. Solo se escribe si el plan tiene refuerzos (con anticipo solo, no aplica).
+    documento: (() => {
+      const sup = detalleSuperficieUnidad(u, proyectoCfg());
+      return {
+        detalleSuperficie: sup.detalle,
+        m2total: sup.total,
+        leyendaRefuerzos: (planSnapshot.refuerzos || []).length > 0
+          ? leyendaRefuerzosTexto(true)
+          : null,
+      };
+    })(),
   };
 
   // Solo persistir si NO estamos en bypass offline.
@@ -4234,24 +4286,39 @@ async function _persistirYImprimirSolicitud(datos) {
 
 // Imprime el documento "Solicitud de Reserva". Layout similar a minuta,
 // con dos bloques de firma (cliente y vendedor) al pie.
+// index_87: la función se renderiza ENTERA desde docData. No lee unidadSeleccionada, ni
+// proyectoActivo, ni params. Eso es lo que permite reimprimirla desde la bandeja y obtener
+// el MISMO papel que firmó el cliente, estando parado en cualquier proyecto y con los
+// parámetros movidos. Antes arrancaba con `if (!unidadSeleccionada) return` — fuera del
+// cotizador era un no-op silencioso, y por eso el botón de reimprimir nunca existió.
 function generarSolicitudReservaPDF(docData) {
-  const u = unidadSeleccionada;
-  if (!u) return;
-  const { cliente, plan, vendedorNombre, observaciones, fechaCreacion } = docData;
+  if (!docData || !docData.plan) return;
+  const { cliente, plan, vendedorNombre, observaciones } = docData;
+  const doc = docData.documento || {};
+  const proyectoId = _solicitudProyecto(docData);
 
-  const hoy = new Date();
-  const fecha = String(hoy.getDate()).padStart(2,'0') + '/' +
-                String(hoy.getMonth()+1).padStart(2,'0') + '/' +
-                hoy.getFullYear();
+  // Fecha del documento = la de creación de la solicitud, NO la de hoy. Dos formas posibles:
+  // Timestamp de Firestore (flujo normal, serverTimestamp ya resuelto) o Date (bypass offline).
+  const fechaDoc = docData.fechaCreacion && docData.fechaCreacion.toDate
+    ? docData.fechaCreacion.toDate()
+    : (docData.fechaCreacion instanceof Date ? docData.fechaCreacion : null);
+  const fecha = fechaDoc
+    ? String(fechaDoc.getDate()).padStart(2,'0') + '/' +
+      String(fechaDoc.getMonth()+1).padStart(2,'0') + '/' +
+      fechaDoc.getFullYear()
+    : '—';
 
-  // Render del plan en la moneda correcta
+  // Render del plan en la moneda correcta.
+  // TC: SOLO el congelado en el snapshot. Antes caía a params.tc si faltaba, que es un param
+  // vivo dentro de un documento congelado — nunca se alcanzaba, pero no tiene por qué estar.
   const esEdilia = plan.moneda === 'ARS';
-  const fmtMon = esEdilia ? (v => fmtARS(v * (plan.tcAlMomento || params.tc))) : (v => fmtUSD(v));
+  const tcDoc = plan.tcAlMomento || 0;
+  const fmtMon = esEdilia ? (v => fmtARS(v * tcDoc)) : (v => fmtUSD(v));
   // GIA en moneda del plan: ARS si Edilia (al tcAlMomento del plan, congelado al firmar), USD si no.
   // Snapshot guarda solo giaUSD; el ARS se reconstruye reusando plan.tcAlMomento.
   const giaUSDsnap = plan.giaUSD || 0;
   const giaTexto = esEdilia
-    ? '$ ' + fmt(Math.round(giaUSDsnap * (plan.tcAlMomento || params.tc)))
+    ? '$ ' + fmt(Math.round(giaUSDsnap * tcDoc))
     : 'USD ' + fmt(Math.round(giaUSDsnap));
   // El GIA va como última fila del MISMO tbody del plan: break-inside:avoid lo mantiene
   // en la misma página que el plan (nunca huérfano al pie).
@@ -4273,8 +4340,13 @@ function generarSolicitudReservaPDF(docData) {
     </table>
   `;
 
-  // Datos de unidad — superficies según las declaradas por el proyecto (Bloque C)
-  const { detalle: detalleSuperficie, total: m2total } = detalleSuperficieUnidad(u);
+  // Superficies: texto CONGELADO en el snapshot (index_87). Se guarda ya armado y no los
+  // campos crudos porque deriva de dos cosas independientes —los valores de la unidad y la
+  // tabla `superficies` del proyecto— y cualquiera de las dos puede cambiar después de firmar.
+  // Solicitudes anteriores a index_87 no traen el bloque: salen sin el detalle, que es lo
+  // honesto. Reconstruirlo desde la unidad viva daría un número que nadie firmó.
+  const detalleSuperficie = doc.detalleSuperficie || '';
+  const m2total = doc.m2total || 0;
 
   // Firmas (Fede 2026-08-19): las DOS hojas se firman → bloque reutilizable, uno por página.
   // Conserva el formato del bloque original (lugar y fecha + firma del cliente con aclaración),
@@ -4317,9 +4389,14 @@ function generarSolicitudReservaPDF(docData) {
       ${bloqueFirmas}`;
   }
 
+  // index_87: los tokens de marca se scopean al div raíz del documento. Pasar proyectoId al
+  // header arregla el logo, pero la paleta y la tipografía viven en :root y seguirían siendo
+  // las del proyecto activo. Como las custom properties heredan, setearlas acá reencapsula
+  // el documento entero. El nombre del proyecto va además en texto: un logo se reconoce si
+  // se conoce; un nombre no se presta a discusión.
   const html = `
-    <div class="minuta-page solicitud-page">
-      ${headerDocumentoMarca('Solicitud de Reserva', fecha)}
+    <div class="minuta-page solicitud-page" style="${estiloMarcaProyecto(proyectoId)}">
+      ${headerDocumentoMarca('Solicitud de Reserva', fecha, `<div class="minuta-fecha">${nombreProyecto(proyectoId)}</div>`, proyectoId)}
 
       <div class="minuta-cliente">
         <div><span class="minuta-key">Cliente:</span> ${cliente.nombre} ${cliente.apellido}</div>
@@ -4336,7 +4413,7 @@ function generarSolicitudReservaPDF(docData) {
       <div class="minuta-seccion">
         <div class="minuta-seccion-titulo">Unidad solicitada</div>
         <div class="minuta-unidad">
-          <div><strong>${u.codigo || '—'}</strong>${u.descripcion ? ' · ' + u.descripcion : ''}</div>
+          <div><strong>${docData.unidadCodigo || '—'}</strong>${docData.unidadDesc ? ' · ' + docData.unidadDesc : ''}</div>
           ${detalleSuperficie ? `<div style="font-size:9pt;color:#555;margin-top:3px;">${detalleSuperficie}${m2total > 0 ? ' · Total ' + fmt(m2total,2) + ' m²' : ''}</div>` : ''}
         </div>
       </div>
@@ -4344,6 +4421,7 @@ function generarSolicitudReservaPDF(docData) {
       <div class="minuta-seccion">
         <div class="minuta-seccion-titulo">Plan solicitado <span style="font-weight:400;font-size:9pt;color:#555;">— Moneda: ${plan.moneda}${esEdilia ? ' (ajustable por índice CAC)' : ''}</span></div>
         ${filaPlan}
+        ${doc.leyendaRefuerzos ? `<div style="font-size:9pt;color:#555;margin-top:6px;">${doc.leyendaRefuerzos}</div>` : ''}
       </div>
 
       ${observaciones ? `
@@ -4354,7 +4432,7 @@ function generarSolicitudReservaPDF(docData) {
 
       ${bloqueFirmas}
       ${paginaPlanCompleto}
-      ${pieDesarrollador()}
+      ${pieDesarrollador(proyectoId)}
     </div>
   `;
 
@@ -4362,6 +4440,9 @@ function generarSolicitudReservaPDF(docData) {
   if (cont) {
     cont.innerHTML = html;
     window.print();
+    // Limpiar después de imprimir, como hace la minuta: el documento lleva tokens de marca
+    // propios y no conviene dejarlo colgado en el DOM al volver a la pantalla.
+    setTimeout(() => { cont.innerHTML = ''; }, 1000);
   }
 }
 
@@ -4471,6 +4552,7 @@ function renderSolicitudesPagina() {
 function renderSolicitudCard(s) {
   const c = s.cliente || {};
   const plan = s.plan || {};
+  const proyectoSolic = _solicitudProyecto(s);
   const esEdilia = plan.moneda === 'ARS';
   const tc = plan.tcAlMomento || params.tc;
   const fmtMon = esEdilia ? (v => fmtARS((v||0) * tc)) : (v => fmtUSD(v||0));
@@ -4496,10 +4578,21 @@ function renderSolicitudCard(s) {
        <span>Total: <strong>${fmtMon(plan.totalUSD)}</strong></span>
        ${plan.esExtendido ? `<span>Financiado a posesión: <strong>${fmtMon(plan.saldoFinanciadoUSD || 0)}</strong> en ${plan.nFin} cuotas de <strong>${fmtMon(plan.cuotaPrimeraUSD || 0)} → ${fmtMon(plan.cuotaUltimaUSD || 0)}</strong> (${fmt(plan.tasaMensualSaldo || 0, 2)} % mensual s/saldo · intereses ${fmtMon(plan.totalInteresesUSD || 0)})</span>` : ''}`;
 
+  // Ver solicitud (index_87): reimprime el documento desde el snapshot congelado. Solo está
+  // disponible si la solicitud trae el bloque `documento`; las anteriores a index_87 no lo
+  // tienen y el botón queda deshabilitado con el motivo a la vista. Generar una versión
+  // degradada sería exactamente lo que el requisito prohíbe: el papel tiene que ser el que
+  // firmó el cliente o no ser.
+  const puedeVer = !!(s.documento && typeof s.documento === 'object');
+  const btnVer = puedeVer
+    ? `<button class="btn btn-secondary btn-sm" onclick="accionVerSolicitud('${s.docId}')">🖨 Ver solicitud</button>`
+    : `<button class="btn btn-secondary btn-sm" disabled title="Solicitud anterior a esta versión: no quedó registrado el documento que firmó el cliente." style="opacity:.45;cursor:not-allowed;">🖨 Ver solicitud</button>`;
+
   // Acciones según estado
   let acciones = '';
   if (s.estado === 'pendiente') {
     acciones = `
+      ${btnVer}
       <button class="btn btn-secondary btn-sm" onclick="accionRechazarSolicitud('${s.docId}')">✕ Rechazar</button>
       <button class="btn btn-primary btn-sm" onclick="accionAprobarSolicitud('${s.docId}')">✓ Aprobar (unidad → reservada)</button>
       <button class="btn btn-primary btn-sm" onclick="accionMarcarVendidaSolicitud('${s.docId}')" style="background:var(--brand-ink);">$ Marcar vendida</button>
@@ -4507,15 +4600,20 @@ function renderSolicitudCard(s) {
   } else {
     // Para aprobadas/rechazadas: solo permitir devolver a pendiente si la unidad sigue disponible
     // (admin puede haber cambiado el estado de la unidad después). Verificamos en runtime.
-    acciones = `<button class="btn btn-secondary btn-sm" onclick="accionDevolverPendienteSolicitud('${s.docId}')">↩ Devolver a pendiente</button>`;
+    acciones = `${btnVer}
+      <button class="btn btn-secondary btn-sm" onclick="accionDevolverPendienteSolicitud('${s.docId}')">↩ Devolver a pendiente</button>`;
   }
 
+  // index_87: la tarjeta lleva los tokens de marca de SU proyecto, no los del activo. Sin esto
+  // el chip que dice "Terrazas" se pintaba con el verde de Qiudad cuando el admin estaba parado
+  // en Qiudad: el cartel decía una cosa y el color otra. La bandeja muestra las solicitudes de
+  // todos los proyectos, así que cada tarjeta se identifica sola.
   return `
-    <div class="solic-card ${s.estado}">
+    <div class="solic-card ${s.estado}" style="${estiloMarcaProyecto(proyectoSolic)}">
       <div class="solic-card-header">
         <div>
           <div class="solic-card-unidad">${s.unidadCodigo || '—'} <span style="font-family:'DM Sans',sans-serif;font-size:13px;color:var(--gray-500);font-weight:400;">${s.unidadDesc ? '· ' + s.unidadDesc : ''}</span></div>
-          <div style="margin-top:4px;display:flex;gap:6px;align-items:center;"><span class="solic-estado-badge ${s.estado}">${s.estado}</span><span style="font-size:11px;font-weight:600;color:var(--brand-mid);background:var(--brand-pale);border:1px solid var(--brand-light);border-radius:4px;padding:1px 7px;">${nombreProyecto(_solicitudProyecto(s))}</span></div>
+          <div style="margin-top:4px;display:flex;gap:6px;align-items:center;"><span class="solic-estado-badge ${s.estado}">${s.estado}</span><span style="font-size:13px;font-weight:700;color:var(--brand-dark);background:var(--brand-pale);border:1px solid var(--brand-light);border-radius:4px;padding:2px 9px;">${nombreProyecto(proyectoSolic)}</span></div>
         </div>
         <div class="solic-card-meta">
           Creada: ${fecha}<br>
@@ -4612,6 +4710,20 @@ async function _marcarUnidad(codigoUnidad, nuevoEstado, proyectoId) {
     alert('Error al guardar el cambio de estado de la unidad: ' + (e.message || e));
     return false;
   }
+}
+
+// Reimprimir la solicitud desde la bandeja (index_87).
+// generarSolicitudReservaPDF ya no depende de unidadSeleccionada ni del proyecto activo, así
+// que el objeto de la bandeja alcanza tal cual: lo que sale es el documento congelado, no una
+// reconstrucción contra el estado de hoy.
+function accionVerSolicitud(docId) {
+  const s = bandejaSolicitudes.find(x => x.docId === docId);
+  if (!s) { alert('No se encontró la solicitud.'); return; }
+  if (!s.documento) {
+    alert('Esta solicitud es anterior a la versión que guarda el documento firmado.\n\nNo se puede reimprimir el papel original.');
+    return;
+  }
+  generarSolicitudReservaPDF(s);
 }
 
 async function accionAprobarSolicitud(docId) {
@@ -4982,6 +5094,8 @@ function renderCotizador(u) {
             style="margin-top:10px;padding:6px 12px;border:1.5px solid var(--gray-300);border-radius:6px;background:white;color:var(--gray-600);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;">
             ↺ Volver a opción inicial
           </button>
+          ${normRefuerzos(planState.refuerzos || [], 0).length > 0 ? `
+          <div style="font-size:11px;color:var(--gray-500);margin-top:10px;">${leyendaRefuerzosTexto(false)}</div>` : ''}
         </div>
         ${!usaEdiliaAct ? `
         <div class="form-group" style="margin:0;">
@@ -8978,6 +9092,67 @@ document.addEventListener('DOMContentLoaded', () => {
       if (/C_\d/.test(document.getElementById('lista-unidades').textContent)) errores.push('lista lateral muestra clase en Sensum');
       unidades.splice(0, unidades.length);
     } finally { cambiarProyecto(prev); }
+    return errores.length === 0 ? true : errores.join(' | ');
+  });
+
+  test('K8', 1, 'Solicitud de reserva: la reimpresión es idéntica aunque cambien params y proyecto activo; marca y nombre salen del proyecto de la solicitud, no del vigente (index_87)', () => {
+    const errores = [];
+    const prevProy = proyectoActivo;
+    const prevTc = params.tc, prevGia = params.giaPct, prevNObra = params.nObraVigente;
+    let cont = document.getElementById('minuta-print-area'), contTemp = false;
+    if (!cont) { cont = document.createElement('div'); cont.id = 'minuta-print-area'; document.body.appendChild(cont); contTemp = true; }
+    const op = window.print; window.print = () => {};
+    try {
+      // Solicitud de Sensum, con el shape exacto que escribe _persistirYImprimirSolicitud.
+      const dd = {
+        id: 'fid-test', estado: 'pendiente',
+        fechaCreacion: new Date(2026, 0, 15), fechaResolucion: null,
+        unidadCodigo: 'UF 9-9', unidadDesc: 'Unidad de prueba',
+        proyecto: 'sensum',
+        cliente: { nombre: 'Ana', apellido: 'Pérez', dni: '30111222', email: 'a@b.c', celular: '1155' },
+        vendedorEmail: 'v@x.com', vendedorNombre: 'Vendedor Test',
+        plan: {
+          nombre: '120 cuotas', tipo: '120c', moneda: 'ARS',
+          anticipoUSD: 20000, refuerzos: [{ monto: 5000, mes: 12 }, { monto: 5000, mes: 24 }],
+          refuerzoUSD: 5000, qRefuerzos: 2, cuotaObraUSD: 700, qCuotas: 120,
+          totalUSD: 150000, descuento: 10, tcAlMomento: 1234,
+          giaUSD: 6000, giaPctSnapshot: 4,
+        },
+        observaciones: 'observación de prueba',
+        documento: {
+          detalleSuperficie: 'Cubierto 50,00 m²', m2total: 50,
+          leyendaRefuerzos: leyendaRefuerzosTexto(true),
+        },
+      };
+
+      // Render 1: parado en Qiudad (proyecto AJENO al de la solicitud).
+      cambiarProyecto('qiudad');
+      generarSolicitudReservaPDF(dd);
+      const h1 = cont.innerHTML;
+      if (!h1) { errores.push('no renderizó'); return errores.join(' | '); }
+
+      // La marca y el nombre tienen que salir de la solicitud, no del proyecto vigente.
+      if (!/Sensum/.test(h1)) errores.push('no nombra el proyecto de la solicitud');
+      if (!cont.querySelector('.minuta-logo-svg svg')) errores.push('logo del proyecto vigente, no el de la solicitud');
+      if (!/posesión efectiva/.test(h1)) errores.push('sin leyenda de refuerzos');
+      if (!/Cubierto 50,00/.test(h1)) errores.push('sin detalle de superficie congelado');
+      if (!/15\/01\/2026/.test(h1)) errores.push('fecha ≠ fechaCreacion');
+
+      // Render 2: mover TODO lo que el documento solía leer vivo.
+      cambiarProyecto('sensum');
+      params.tc = 9999; params.giaPct = 77; params.nObraVigente = 99;
+      cont.innerHTML = '';
+      generarSolicitudReservaPDF(dd);
+      const h2 = cont.innerHTML;
+      if (h1 !== h2) errores.push('la reimpresión difiere al cambiar params y proyecto activo');
+
+      cont.innerHTML = '';
+    } finally {
+      window.print = op;
+      params.tc = prevTc; params.giaPct = prevGia; params.nObraVigente = prevNObra;
+      try { cambiarProyecto(prevProy); } catch (e) { errores.push('restaurar: ' + e.message); }
+      if (contTemp) cont.remove(); else cont.innerHTML = '';
+    }
     return errores.length === 0 ? true : errores.join(' | ');
   });
 
