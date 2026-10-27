@@ -1678,6 +1678,12 @@
     <button class="nav-btn nav-btn-vision" id="nav-btn-vision" onclick="_toggleVisionVendedor()" style="display:none;">Visión vendedor</button>
   </nav>
   <div style="width:1px;height:32px;background:rgba(255,255,255,0.2);margin:0 4px;"></div>
+  <!-- index_89: cartel de parámetros efímeros. NO se oculta con "Visión vendedor": si se
+       ocultara, un admin podría pasar a vista vendedor y seguir cotizando con parámetros
+       que no están guardados, sin ninguna señal en pantalla. -->
+  <div id="header-aviso-params" style="display:none;align-items:center;gap:8px;background:#fef9c3;color:#854d0e;border:1px solid #fde68a;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:600;font-family:'DM Sans',sans-serif;">
+    ⚠ Parámetros solo en esta sesión
+  </div>
   <div style="display:flex;align-items:center;gap:12px;">
     <div style="text-align:right;line-height:1.2;">
       <div id="header-user-name" style="font-size:12px;font-weight:500;color:white;">—</div>
@@ -1823,39 +1829,41 @@
     <h1 style="font-family:var(--brand-font-display); font-size:28px; color:var(--brand-dark);">Parámetros del Sistema</h1>
     <p style="color:var(--gray-500); font-size:14px;">Globales de mercado (comunes a todos los proyectos) y parámetros de <strong id="params-scope-nombre">—</strong> (el proyecto activo).</p>
   </div>
+  <!-- index_89: barra de estado de los parámetros. La pinta actualizarAvisoParams(). -->
+  <div id="params-aviso" style="display:none;align-items:center;gap:12px;padding:12px 16px;border:1.5px solid;border-radius:8px;margin-bottom:20px;"></div>
   <div class="params-grid">
     <div class="param-section">
       <div class="param-section-title">Globales de mercado <span class="param-scope param-scope-global">Todos los proyectos</span></div>
       <div style="font-size:11px;color:var(--gray-500);margin:-8px 0 12px;">Datos de mercado (índice CAC, tipo de cambio). Se editan una sola vez y aplican a todos los proyectos; nunca son por proyecto.</div>
       <div class="form-group">
         <label>Índice CAC (ARS por punto)</label>
-        <input type="number" id="p-cac" class="mono" value="19453" oninput="guardarParametros()">
+        <input type="number" id="p-cac" class="mono" value="19453" oninput="leerParametrosDeUI()">
       </div>
       <div class="form-group">
         <label>Tipo de cambio (ARS/USD)</label>
-        <input type="number" id="p-tc" class="mono" value="1430" oninput="guardarParametros()">
+        <input type="number" id="p-tc" class="mono" value="1430" oninput="leerParametrosDeUI()">
       </div>
     </div>
     <div class="param-section">
       <div class="param-section-title">Anticipos <span class="param-scope param-scope-proyecto"></span></div>
       <div class="form-group">
         <label>Anticipo mínimo (%)</label>
-        <input type="number" id="p-ant-min" class="mono" value="20" step="1" oninput="guardarParametros()">
+        <input type="number" id="p-ant-min" class="mono" value="20" step="1" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Mínimo del anticipo en todos los planes (depto, paquete con cocheras/bauleras).</div>
       </div>
       <div class="form-group">
         <label>Integración mínima — anticipo + refuerzos (%)</label>
-        <input type="number" id="p-integracion-min" class="mono" value="50" step="1" oninput="guardarParametros()">
+        <input type="number" id="p-integracion-min" class="mono" value="50" step="1" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Piso de anticipo + refuerzos. Si se sacan refuerzos, sube el anticipo para cubrirlo. Debe ser ≥ anticipo mínimo.</div>
       </div>
       <div class="form-group">
         <label>Aportes hasta posesión (%)</label>
-        <input type="number" id="p-aportes-min-posesion" class="mono" value="20" step="1" min="0" max="100" oninput="guardarParametros()">
+        <input type="number" id="p-aportes-min-posesion" class="mono" value="20" step="1" min="0" max="100" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Piso de lo aportado hasta la entrega inclusive (anticipo + refuerzos + cuotas de obra) sobre el precio. En todos los proyectos se evalúa: si el plan no llega, la fila se marca y la solicitud se bloquea.</div>
       </div>
       <div class="form-group">
         <label>Anticipo precargado (%)</label>
-        <input type="number" id="p-ant-default" class="mono" value="20" step="1" oninput="guardarParametros()">
+        <input type="number" id="p-ant-default" class="mono" value="20" step="1" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Valor que se sugiere por default al abrir el cotizador. Se redondea a 1.000.</div>
       </div>
       <div class="form-group">
@@ -1865,7 +1873,7 @@
       </div>
       <div class="form-group">
         <label>GIA (%)</label>
-        <input type="number" id="p-gia-pct" class="mono" value="4" step="0.1" oninput="guardarParametros()">
+        <input type="number" id="p-gia-pct" class="mono" value="4" step="0.1" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Gastos de Instrumentación y Administración. Cash: % × precio cash. Resto de los planes: % × precio 36c (no escala con financiación).</div>
       </div>
     </div>
@@ -1874,43 +1882,43 @@
       <div class="form-group">
         <label>TNA objetivo por plazo (%)</label>
         <div style="display:flex;gap:8px;">
-          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">60c</div><input type="number" id="p-tna-obj-60" class="mono" value="14.283" step="0.1" oninput="guardarParametros()"></div>
-          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">120c</div><input type="number" id="p-tna-obj-120" class="mono" value="14.283" step="0.1" oninput="guardarParametros()"></div>
-          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">180c</div><input type="number" id="p-tna-obj-180" class="mono" value="14.283" step="0.1" oninput="guardarParametros()"></div>
-          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">240c</div><input type="number" id="p-tna-obj-240" class="mono" value="14.283" step="0.1" oninput="guardarParametros()"></div>
+          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">60c</div><input type="number" id="p-tna-obj-60" class="mono" value="14.283" step="0.1" oninput="leerParametrosDeUI()"></div>
+          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">120c</div><input type="number" id="p-tna-obj-120" class="mono" value="14.283" step="0.1" oninput="leerParametrosDeUI()"></div>
+          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">180c</div><input type="number" id="p-tna-obj-180" class="mono" value="14.283" step="0.1" oninput="leerParametrosDeUI()"></div>
+          <div style="flex:1;"><div style="font-size:11px;color:var(--gray-500);margin-bottom:2px;">240c</div><input type="number" id="p-tna-obj-240" class="mono" value="14.283" step="0.1" oninput="leerParametrosDeUI()"></div>
         </div>
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">TNA de financiación vs precio referencia, por plazo. Input de mercado (una tasa de referencia por horizonte).</div>
       </div>
       <div class="form-group">
         <label>Umbral recaudación obra (USD/m² hom)</label>
-        <input type="number" id="p-umbral-obra" class="mono" value="1500" step="50" oninput="guardarParametros()">
+        <input type="number" id="p-umbral-obra" class="mono" value="1500" step="50" oninput="leerParametrosDeUI()">
       </div>
     </div>
     <div class="param-section">
       <div class="param-section-title">Construcción y obra <span class="param-scope param-scope-proyecto"></span></div>
       <div class="form-group">
         <label>Meses hasta fin de obra</label>
-        <input type="number" id="p-n-obra-vigente" class="mono" value="36" step="1" min="1" oninput="guardarParametros()">
+        <input type="number" id="p-n-obra-vigente" class="mono" value="36" step="1" min="1" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Define la longitud del plan de referencia y el corte obra/post-obra para opciones de financiación</div>
       </div>
       <div class="form-group" data-solo-edilia="1">
         <label>Descuento máximo cuota pura (%)</label>
-        <input type="number" id="p-desc-max" class="mono" value="30" step="1" oninput="guardarParametros()">
+        <input type="number" id="p-desc-max" class="mono" value="30" step="1" oninput="leerParametrosDeUI()">
       </div>
       <div class="form-group" data-solo-edilia="1">
         <label>Componente tierra (%)</label>
-        <input type="number" id="p-tierra" class="mono" value="15" step="1" oninput="guardarParametros()">
+        <input type="number" id="p-tierra" class="mono" value="15" step="1" oninput="leerParametrosDeUI()">
       </div>
       <!-- Plan extendido (proyectos no-Edilia; index_84). El plazo lo elige el vendedor en el cotizador
            hasta este tope; la tasa se congela por contrato en el snapshot de la solicitud. -->
       <div class="form-group" data-solo-no-edilia="1">
         <label>Plazo máximo del plan extendido (cuotas totales)</label>
-        <input type="number" id="p-ntotal-max" class="mono" value="60" step="1" min="2" oninput="guardarParametros()">
+        <input type="number" id="p-ntotal-max" class="mono" value="60" step="1" min="2" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Tope del selector de plazo que ve el vendedor (obra + financiación). Debe ser mayor que los meses hasta fin de obra.</div>
       </div>
       <div class="form-group" data-solo-no-edilia="1">
         <label>Tasa mensual sobre saldo (%)</label>
-        <input type="number" id="p-tasa-mensual-saldo" class="mono" value="1" step="0.05" min="0" oninput="guardarParametros()">
+        <input type="number" id="p-tasa-mensual-saldo" class="mono" value="1" step="0.05" min="0" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Interés mensual sobre saldo deudor del financiamiento post-posesión (sistema alemán, cuota decreciente). Queda fija por contrato en cada solicitud.</div>
       </div>
     </div>
@@ -2624,8 +2632,53 @@ function componerParams() {
   return { ...paramsGlobales, ...JSON.parse(JSON.stringify(cfg.params)) };
 }
 
+// ── Parámetros: confirmación explícita (index_89) ──────────────────────────
+// Antes cada tecleo del panel escribía en Firestore. Dos consecuencias malas: un valor
+// a medio tipear ("1" camino a "15") quedaba público y vigente para todos, y no había
+// forma de probar un parámetro sin dejarlo guardado.
+// Ahora editar muta solo el objeto efectivo `params`. La persistencia es un acto aparte.
+//   paramsPendientes → hay cambios sin confirmar
+//   paramsEfimeros   → el admin eligió usarlos solo en esta sesión (mueren con la pestaña)
+// En cualquiera de los dos estados, sincronizarParamsACapas() no hace nada: eso es lo que
+// impide que una acción ajena (guardar una unidad, importar, aprobar una reserva) empuje
+// los params a Firestore por la puerta de al lado, porque todas pasan por guardarEstado().
+let paramsPendientes = false;
+let paramsEfimeros   = false;
+
+function paramsSinPersistir() { return paramsPendientes || paramsEfimeros; }
+
+function marcarParamsPendientes() {
+  paramsPendientes = true;
+  actualizarAvisoParams();
+}
+
+function confirmarParametros() {
+  // Limpiar ANTES de guardar: si no, el candado de sincronizarParamsACapas se traga el write.
+  paramsPendientes = false;
+  paramsEfimeros   = false;
+  guardarEstado();
+  actualizarAvisoParams();
+}
+
+function descartarParametros() {
+  paramsPendientes = false;
+  paramsEfimeros   = false;
+  params = componerParams();        // recompone desde las capas, que nunca se tocaron
+  window.params = params;
+  if (typeof cargarParametrosEnUI === 'function') cargarParametrosEnUI();
+  if (typeof unidadSeleccionada !== 'undefined' && unidadSeleccionada) renderCotizador(unidadSeleccionada);
+  actualizarAvisoParams();
+}
+
+function mantenerParamsEnSesion() {
+  paramsPendientes = false;
+  paramsEfimeros   = true;
+  actualizarAvisoParams();
+}
+
 // Split inverso: vuelca el objeto efectivo a sus capas. Se llama desde guardarEstado().
 function sincronizarParamsACapas() {
+  if (paramsSinPersistir()) return;   // index_89: candado — ver bloque de arriba
   const cfg = proyectoCfg();
   const copia = JSON.parse(JSON.stringify(params));
   GLOBAL_PARAM_KEYS.forEach(k => {
@@ -6247,7 +6300,7 @@ function eliminarUnidad(idx) {
 // ═══════════════════════════════════════════════════════════════════
 // PARAMETROS
 // ═══════════════════════════════════════════════════════════════════
-function guardarParametros() {
+function leerParametrosDeUI() {
   params.cac         = parseFloat(document.getElementById('p-cac').value) || 19453;
   params.tc          = parseFloat(document.getElementById('p-tc').value) || 1430;
   params.antMinPct     = parseFloat(document.getElementById('p-ant-min').value) || 20;
@@ -6289,7 +6342,7 @@ function guardarParametros() {
   // Nota: precioCash y precioReferencia vienen del Excel y son independientes.
   // No se recalculan al cambiar params (eso pisaría el dato del Excel).
   if (unidadSeleccionada) renderCotizador(unidadSeleccionada);
-  guardarEstado();
+  marcarParamsPendientes();   // index_89: editar ya no persiste — ver confirmarParametros()
 }
 
 // Toggle de visibilidad de un plan en la comparativa.
@@ -6301,7 +6354,43 @@ function togglePlanVisible(planKey, checked) {
   }
   params.planesVisibles[planKey] = !!checked;
   if (unidadSeleccionada) renderCotizador(unidadSeleccionada);
-  guardarEstado();
+  // index_89: antes persistía solo, mientras el resto del panel esperaba confirmación.
+  marcarParamsPendientes();
+}
+
+// Señal visible del estado de los parámetros (index_89).
+// Dos lugares, a propósito: la barra del panel, donde se decide, y el cartel del header,
+// que acompaña al admin cuando se va a cotizar con parámetros que no están guardados.
+// El del header NO se oculta con "Visión vendedor": si se ocultara, un admin podría pasar
+// a vista vendedor y seguir cotizando con params efímeros sin ninguna señal en pantalla.
+function actualizarAvisoParams() {
+  const barra = document.getElementById('params-aviso');
+  if (barra) {
+    if (paramsPendientes) {
+      barra.style.display = 'flex';
+      barra.style.background = '#fef9c3';
+      barra.style.borderColor = '#fde68a';
+      barra.innerHTML =
+        '<div style="flex:1;font-size:13px;color:#854d0e;"><strong>Cambios sin confirmar.</strong> ' +
+        'Todavía no se guardaron: nadie más los ve y se pierden si cerrás la pestaña.</div>' +
+        '<button onclick="descartarParametros()" class="btn btn-secondary btn-sm">Descartar</button>' +
+        '<button onclick="confirmarParametros()" class="btn btn-primary btn-sm">Aceptar como nuevos parámetros</button>';
+    } else if (paramsEfimeros) {
+      barra.style.display = 'flex';
+      barra.style.background = 'var(--brand-pale)';
+      barra.style.borderColor = 'var(--brand-light)';
+      barra.innerHTML =
+        '<div style="flex:1;font-size:13px;color:var(--brand-dark);"><strong>Parámetros solo para esta sesión.</strong> ' +
+        'Valen para lo que cotices acá y mueren al cerrar la pestaña. No se guardaron.</div>' +
+        '<button onclick="descartarParametros()" class="btn btn-secondary btn-sm">Volver a los guardados</button>' +
+        '<button onclick="confirmarParametros()" class="btn btn-primary btn-sm">Aceptar como nuevos parámetros</button>';
+    } else {
+      barra.style.display = 'none';
+      barra.innerHTML = '';
+    }
+  }
+  const cartel = document.getElementById('header-aviso-params');
+  if (cartel) cartel.style.display = paramsEfimeros ? 'flex' : 'none';
 }
 
 // Carga los valores de params en los inputs de la solapa Parámetros.
@@ -6357,7 +6446,7 @@ function cargarParametrosEnUI() {
           const mesLabel = r.mes === 'posesion' ? 'posesión (mes ' + (params.nObraVigente ?? 36) + ')' : 'mes ' + r.mes;
           return '<div style="display:flex;gap:8px;align-items:center;">' +
             '<input type="number" id="p-refdef-pct-' + i + '" class="mono" value="' + (r.pct || 0) + '" step="1" min="0" ' +
-            'oninput="guardarParametros()" style="width:80px;">' +
+            'oninput="leerParametrosDeUI()" style="width:80px;">' +
             '<span style="font-size:12px;color:var(--gray-600);">% · ' + mesLabel + '</span></div>';
         }).join('');
   }
@@ -6479,11 +6568,19 @@ function cerrarModalImportar() {
   document.getElementById('modal-importar').classList.remove('open');
 }
 
-function cambiarProyecto(id) {
+function cambiarProyecto(id, _forzar) {
   // Tolerar valores legacy (nombre display) por si llega de un select viejo o un link
   if (!proyectoIdValido(id) && PROYECTO_LEGACY_MAP[id]) id = PROYECTO_LEGACY_MAP[id];
   if (!proyectoIdValido(id)) { console.warn('Proyecto desconocido:', id); return; }
   if (id === proyectoActivo) return;
+  // index_89: los params son POR PROYECTO, así que nada sin persistir sobrevive al cambio.
+  // El diálogo va sin la opción "solo en esta sesión": mantenerla exigiría overlays por
+  // proyecto. Sin diálogo, cambiar de proyecto evaporaba los cambios sin avisar.
+  if (!_forzar && paramsSinPersistir()) {
+    _paramsPendientesDestino = { tipo: 'proyecto', valor: id };
+    abrirModalParamsPendientes(false);
+    return;
+  }
   // Los params del proyecto saliente ya están en su capa: toda escritura persiste
   // vía guardarEstado() → sincronizarParamsACapas() (write-through al guardar).
   proyectoActivo = id;
@@ -7701,7 +7798,57 @@ async function devolverDisponible(idx) {
   renderUnidadesGrid();
 }
 
-function showPage(page) {
+// Diálogo de resolución de parámetros sin persistir (index_89).
+// Guarda a dónde quería ir el usuario y reanuda esa navegación después de decidir.
+let _paramsPendientesDestino = null;
+
+function abrirModalParamsPendientes(conSesion) {
+  const btnSesion = document.getElementById('btn-params-sesion');
+  if (btnSesion) btnSesion.style.display = conSesion ? '' : 'none';
+  const nota = document.getElementById('modal-params-nota');
+  if (nota) nota.textContent = conSesion
+    ? 'Si los mantenés solo en esta sesión, vas a poder cotizar con ellos sin que queden guardados ni los vea nadie más.'
+    : 'Los parámetros son por proyecto, así que al cambiar de proyecto no se pueden mantener en la sesión: hay que aceptarlos o descartarlos.';
+  const m = document.getElementById('modal-params-pendientes');
+  if (m) m.classList.add('open');
+}
+
+function _resolverParamsPendientes(accion) {
+  if (accion === 'confirmar')    confirmarParametros();
+  else if (accion === 'sesion')  mantenerParamsEnSesion();
+  else                           descartarParametros();
+  const m = document.getElementById('modal-params-pendientes');
+  if (m) m.classList.remove('open');
+  const destino = _paramsPendientesDestino;
+  _paramsPendientesDestino = null;
+  if (!destino) return;
+  if (destino.tipo === 'pagina') showPage(destino.valor, true);
+  else cambiarProyecto(destino.valor, true);
+}
+
+// index_89: cerrar o recargar con parámetros sin persistir los pierde (es lo decidido).
+// El aviso nativo del navegador no ofrece tres opciones — solo evita el cierre por accidente.
+window.addEventListener('beforeunload', function(e) {
+  if (!paramsSinPersistir()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+// index_89: salir de Parámetros con cambios sin confirmar abre el diálogo de resolución.
+// La navegación queda diferida: la retoma _resolverParamsPendientes() con _forzar = true.
+// El estado "¿estoy en Parámetros?" se lee del DOM en vez de llevarse en una variable,
+// para que no pueda desincronizarse de lo que el usuario realmente está viendo.
+function _enPaginaParametros() {
+  const el = document.getElementById('page-parametros');
+  return !!el && el.style.display !== 'none';
+}
+
+function showPage(page, _forzar) {
+  if (!_forzar && paramsPendientes && page !== 'parametros' && _enPaginaParametros()) {
+    _paramsPendientesDestino = { tipo: 'pagina', valor: page };
+    abrirModalParamsPendientes(true);
+    return;
+  }
   document.querySelectorAll('[id^="page-"]').forEach(el => el.style.display = 'none');
   document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
   document.getElementById('page-' + page).style.display = page === 'cotizador' ? 'grid' : 'block';
@@ -7757,6 +7904,22 @@ document.addEventListener('DOMContentLoaded', () => {
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;">Verde</span> ≥ umbral obra (${fmt(params.umbralObraM2)} USD/m²) · 
       <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;">Amarillo</span> 75–100% del umbral · 
       <span style="background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:3px;">Rojo</span> < 75% del umbral
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ MODAL PARAMETROS SIN CONFIRMAR (index_89) -->
+<div class="modal-overlay" id="modal-params-pendientes">
+  <div class="modal" style="width:560px;max-width:95vw;">
+    <div class="modal-title" style="margin-bottom:12px;">Cambios de parámetros sin confirmar</div>
+    <div style="font-size:13px;color:var(--gray-600);line-height:1.6;">
+      Tocaste parámetros y todavía no se guardaron. Nadie más los está viendo.
+    </div>
+    <div id="modal-params-nota" style="font-size:12px;color:var(--gray-500);line-height:1.6;margin-top:10px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:22px;flex-wrap:wrap;">
+      <button onclick="_resolverParamsPendientes('descartar')" class="btn btn-secondary btn-sm">Descartar</button>
+      <button id="btn-params-sesion" onclick="_resolverParamsPendientes('sesion')" class="btn btn-outline btn-sm">Mantener solo en esta sesión</button>
+      <button onclick="_resolverParamsPendientes('confirmar')" class="btn btn-primary btn-sm">Aceptar como nuevos parámetros</button>
     </div>
   </div>
 </div>
@@ -9107,6 +9270,63 @@ document.addEventListener('DOMContentLoaded', () => {
       if (/C_\d/.test(document.getElementById('lista-unidades').textContent)) errores.push('lista lateral muestra clase en Sensum');
       unidades.splice(0, unidades.length);
     } finally { cambiarProyecto(prev); }
+    return errores.length === 0 ? true : errores.join(' | ');
+  });
+
+  test('P1', 1, 'Parámetros: editar el panel muta el objeto efectivo y marca pendiente, pero NO escribe en la capa del proyecto (index_89)', () => {
+    const errores = [];
+    const capaPrev = JSON.parse(JSON.stringify(proyectoCfg().params));
+    const globPrev = JSON.parse(JSON.stringify(paramsGlobales));
+    const pendPrev = paramsPendientes, efiPrev = paramsEfimeros;
+    try {
+      paramsPendientes = false; paramsEfimeros = false;
+      cargarParametrosEnUI();                       // sincroniza la UI con params actuales
+      const el = document.getElementById('p-desc-max');
+      if (!el) return 'no existe el input p-desc-max';
+      const objetivo = (capaPrev.descMax || 30) + 5;
+      el.value = String(objetivo);
+      leerParametrosDeUI();
+      if (params.descMax !== objetivo) errores.push('params no tomó el valor de la UI');
+      if (!paramsPendientes) errores.push('no quedó marcado como pendiente');
+      if (proyectoCfg().params.descMax !== capaPrev.descMax) errores.push('la capa del proyecto se escribió sin confirmar');
+    } finally {
+      proyectoCfg().params = capaPrev;
+      Object.keys(globPrev).forEach(k => { paramsGlobales[k] = globPrev[k]; });
+      paramsPendientes = false; paramsEfimeros = false;
+      params = componerParams(); window.params = params;
+      cargarParametrosEnUI();
+      paramsPendientes = pendPrev; paramsEfimeros = efiPrev;
+      actualizarAvisoParams();
+    }
+    return errores.length === 0 ? true : errores.join(' | ');
+  });
+
+  test('P2', 1, 'Parámetros: con cambios sin confirmar, una acción ajena que llama a guardarEstado NO los empuja a la capa; al confirmar sí bajan (index_89)', () => {
+    const errores = [];
+    const capaPrev = JSON.parse(JSON.stringify(proyectoCfg().params));
+    const globPrev = JSON.parse(JSON.stringify(paramsGlobales));
+    const pendPrev = paramsPendientes, efiPrev = paramsEfimeros;
+    const paramsPrev = JSON.parse(JSON.stringify(params));
+    try {
+      const objetivo = (capaPrev.descMax || 30) + 7;
+      paramsPendientes = true;
+      params.descMax = objetivo;
+      guardarEstado();                              // lo que dispara guardar una unidad
+      if (proyectoCfg().params.descMax !== capaPrev.descMax) errores.push('se filtró a la capa con cambios pendientes');
+      paramsEfimeros = true; paramsPendientes = false;
+      guardarEstado();                              // y tampoco en modo efímero
+      if (proyectoCfg().params.descMax !== capaPrev.descMax) errores.push('se filtró a la capa en modo efímero');
+      paramsEfimeros = false;
+      guardarEstado();                              // sin candado, baja
+      if (proyectoCfg().params.descMax !== objetivo) errores.push('al confirmar no bajó a la capa');
+    } finally {
+      proyectoCfg().params = capaPrev;
+      Object.keys(globPrev).forEach(k => { paramsGlobales[k] = globPrev[k]; });
+      paramsPendientes = false; paramsEfimeros = false;
+      params = paramsPrev; window.params = params;
+      paramsPendientes = pendPrev; paramsEfimeros = efiPrev;
+      actualizarAvisoParams();
+    }
     return errores.length === 0 ? true : errores.join(' | ');
   });
 
