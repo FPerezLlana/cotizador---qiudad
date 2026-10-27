@@ -2534,11 +2534,32 @@ function renderLandingProyectos() {
   }
 }
 // Vuelve a la landing en modo "seleccionar proyecto" (botón del header). No cierra sesión.
-function volverALanding() { mostrarLanding('proyecto'); }
+// index_90: ESTA es la puerta por la que se escapaban los cambios sin confirmar. No pasa por
+// showPage ni por cambiarProyecto, así que ninguno de los dos candados de index_89 la cubría:
+// el usuario salía a la landing sin que apareciera el diálogo.
+// Se ofrecen las tres salidas porque volver al MISMO proyecto deja los efímeros válidos.
+function volverALanding() {
+  if (paramsSinPersistir()) {
+    _paramsPendientesDestino = { tipo: 'landing' };
+    abrirModalParamsPendientes(true);
+    return;
+  }
+  mostrarLanding('proyecto');
+}
 // Entra al proyecto elegido: aplica marca, muestra la app. Idempotente si ya era el activo.
-function entrarProyecto(id) {
+// index_90: segundo agujero. Llamaba a cambiarProyecto() e ignoraba que hubiera quedado
+// diferido, siguiendo igual con el cambio de vista: terminabas "dentro" de un proyecto que
+// nunca cambió. Y si volvías al MISMO proyecto ni siquiera pasaba por cambiarProyecto.
+// La opción "mantener en sesión" solo se ofrece al volver al mismo proyecto: los params son
+// por proyecto y no sobreviven a un cambio.
+function entrarProyecto(id, _forzar) {
   if (!proyectoIdValido(id)) return;
-  if (id !== proyectoActivo) cambiarProyecto(id); else aplicarMarca(id);
+  if (!_forzar && paramsSinPersistir()) {
+    _paramsPendientesDestino = { tipo: 'entrar', valor: id };
+    abrirModalParamsPendientes(id === proyectoActivo);
+    return;
+  }
+  if (id !== proyectoActivo) cambiarProyecto(id, true); else aplicarMarca(id);
   const ls = document.getElementById('login-screen'), ar = document.getElementById('app-root');
   if (ls) ls.style.display = 'none'; if (ar) ar.style.display = 'block';
   if (typeof cargarParametrosEnUI === 'function') cargarParametrosEnUI();
@@ -6374,6 +6395,10 @@ function actualizarAvisoParams() {
         '<div style="flex:1;font-size:13px;color:#854d0e;"><strong>Cambios sin confirmar.</strong> ' +
         'Todavía no se guardaron: nadie más los ve y se pierden si cerrás la pestaña.</div>' +
         '<button onclick="descartarParametros()" class="btn btn-secondary btn-sm">Descartar</button>' +
+        // index_91: tercera salida desde el propio panel. Hasta acá la única forma de llegar
+        // al modo efímero era editar y después irse de la pestaña, lo que lo volvía invisible
+        // para cualquiera que no supiera de antemano que existía.
+        '<button onclick="mantenerParamsEnSesion()" class="btn btn-outline btn-sm">Usar solo en esta sesión</button>' +
         '<button onclick="confirmarParametros()" class="btn btn-primary btn-sm">Aceptar como nuevos parámetros</button>';
     } else if (paramsEfimeros) {
       barra.style.display = 'flex';
@@ -7822,8 +7847,10 @@ function _resolverParamsPendientes(accion) {
   const destino = _paramsPendientesDestino;
   _paramsPendientesDestino = null;
   if (!destino) return;
-  if (destino.tipo === 'pagina') showPage(destino.valor, true);
-  else cambiarProyecto(destino.valor, true);
+  if (destino.tipo === 'pagina')       showPage(destino.valor, true);
+  else if (destino.tipo === 'proyecto') cambiarProyecto(destino.valor, true);
+  else if (destino.tipo === 'entrar')   entrarProyecto(destino.valor, true);
+  else if (destino.tipo === 'landing')  mostrarLanding('proyecto');
 }
 
 // index_89: cerrar o recargar con parámetros sin persistir los pierde (es lo decidido).
@@ -7904,22 +7931,6 @@ document.addEventListener('DOMContentLoaded', () => {
       <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;">Verde</span> ≥ umbral obra (${fmt(params.umbralObraM2)} USD/m²) · 
       <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;">Amarillo</span> 75–100% del umbral · 
       <span style="background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:3px;">Rojo</span> < 75% del umbral
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════ MODAL PARAMETROS SIN CONFIRMAR (index_89) -->
-<div class="modal-overlay" id="modal-params-pendientes">
-  <div class="modal" style="width:560px;max-width:95vw;">
-    <div class="modal-title" style="margin-bottom:12px;">Cambios de parámetros sin confirmar</div>
-    <div style="font-size:13px;color:var(--gray-600);line-height:1.6;">
-      Tocaste parámetros y todavía no se guardaron. Nadie más los está viendo.
-    </div>
-    <div id="modal-params-nota" style="font-size:12px;color:var(--gray-500);line-height:1.6;margin-top:10px;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:22px;flex-wrap:wrap;">
-      <button onclick="_resolverParamsPendientes('descartar')" class="btn btn-secondary btn-sm">Descartar</button>
-      <button id="btn-params-sesion" onclick="_resolverParamsPendientes('sesion')" class="btn btn-outline btn-sm">Mantener solo en esta sesión</button>
-      <button onclick="_resolverParamsPendientes('confirmar')" class="btn btn-primary btn-sm">Aceptar como nuevos parámetros</button>
     </div>
   </div>
 </div>
@@ -10095,6 +10106,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- Contenedor donde se inyecta la minuta antes de imprimir. Vacío en condiciones normales. -->
 <div id="minuta-print-area"></div>
+
+<!-- index_90: este modal vive FUERA de app-root a propósito. Adentro quedaba invisible
+     cuando la landing de selección de proyecto oculta app-root, y el usuario se
+     encontraba con que no pasaba nada. -->
+<!-- ═══════════════════════════════════════════════ MODAL PARAMETROS SIN CONFIRMAR (index_89, movido fuera de app-root en index_90) -->
+<div class="modal-overlay" id="modal-params-pendientes">
+  <div class="modal" style="width:560px;max-width:95vw;">
+    <div class="modal-title" style="margin-bottom:12px;">Cambios de parámetros sin confirmar</div>
+    <div style="font-size:13px;color:var(--gray-600);line-height:1.6;">
+      Tocaste parámetros y todavía no se guardaron. Nadie más los está viendo.
+    </div>
+    <div id="modal-params-nota" style="font-size:12px;color:var(--gray-500);line-height:1.6;margin-top:10px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:22px;flex-wrap:wrap;">
+      <button onclick="_resolverParamsPendientes('descartar')" class="btn btn-secondary btn-sm">Descartar</button>
+      <button id="btn-params-sesion" onclick="_resolverParamsPendientes('sesion')" class="btn btn-outline btn-sm">Mantener solo en esta sesión</button>
+      <button onclick="_resolverParamsPendientes('confirmar')" class="btn btn-primary btn-sm">Aceptar como nuevos parámetros</button>
+    </div>
+  </div>
+</div>
+
 
 </body>
 </html>
