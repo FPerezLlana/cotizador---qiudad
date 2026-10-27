@@ -5119,15 +5119,19 @@ function renderCotizador(u) {
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
         <div class="card-title" style="margin-bottom:0;">Comparativa de planes</div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button onclick="abrirModalMinuta()" class="btn btn-secondary btn-sm" title="Imprimir/guardar como PDF la minuta con la configuración actual">
-            🖨 Generar minuta
-          </button>
+        <!-- index_88: la minuta pasa a primaria y agrandada, y queda a la derecha del todo.
+             Antes era btn-secondary btn-sm (gris chico) compitiendo de igual a igual con los
+             cinco o seis "Solicitar" de la tabla: el vendedor no la veía y pedía reserva sin
+             haberle mostrado las opciones al cliente. La jerarquía es el cambio, no el tamaño. -->
+        <div style="display:flex;gap:10px;align-items:center;">
           ${window.currentUserRole === 'admin' ? `
             <button onclick="abrirMatrizRecaudacion()" class="btn btn-secondary btn-sm" title="Recaudación acumulada por m² × plazo del plan">
               📊 Matriz de recaudación
             </button>
           ` : ''}
+          <button onclick="abrirModalMinuta()" class="btn btn-primary" style="font-size:15px;padding:12px 22px;white-space:nowrap;" title="Imprimir/guardar como PDF la minuta con la configuración actual">
+            🖨 Generar minuta con opciones de pago
+          </button>
         </div>
       </div>
       ${(() => {
@@ -5137,7 +5141,10 @@ function renderCotizador(u) {
         const labelPrecio = `Precio unidad ${u.codigo}${comps.length ? ' + ' + comps.join(' + ') : ''}`;
         const esVendedor = window.currentUserRole !== 'admin';
         return `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:24px;padding:2px 0 20px;border-bottom:1px solid var(--gray-200);margin-bottom:16px;">
+      <!-- index_88: precio de lista y oferta de contado uno al lado del otro. Antes el
+           space-between los mandaba a extremos opuestos de la fila y en pantalla ancha
+           quedaban divorciados, justo cuando son los dos números que el cliente compara. -->
+      <div style="display:flex;justify-content:flex-start;align-items:center;gap:20px;padding:2px 0 20px;border-bottom:1px solid var(--gray-200);margin-bottom:16px;">
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--gray-500);margin-bottom:6px;">${labelPrecio}</div>
           <div style="font-family:var(--brand-font-display);font-size:32px;color:var(--brand-dark);letter-spacing:-0.02em;line-height:1;">${fmtUSD(sumaRefPaquete)}</div>
@@ -5241,6 +5248,14 @@ function renderCotizador(u) {
             </tbody>
           ` : ''}
         </table>
+      </div>
+      <!-- index_88: segunda salida a la minuta al pie de la comparativa. El botón de arriba
+           queda fuera de pantalla justo cuando el vendedor terminó de configurar anticipo y
+           refuerzos y está mirando la tabla — que es el momento en que decide. -->
+      <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--gray-200);display:flex;justify-content:center;">
+        <button onclick="abrirModalMinuta()" class="btn btn-primary" style="font-size:15px;padding:12px 24px;white-space:nowrap;" title="Imprimir/guardar como PDF la minuta con la configuración actual">
+          🖨 Generar minuta con opciones de pago
+        </button>
       </div>
     </div>
 
