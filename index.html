@@ -2423,6 +2423,45 @@ const PROYECTOS_DEFAULT = {
       planesVisibles: { '36c': true, '60c': true, '120c': true, '180c': false, '240c': false },
     },
   },
+  // Unidades Terminadas (index_92): stock ya construido, de cualquier emprendimiento.
+  // Primer release: SOLO CONTADO. Por eso `planesVisibles` apaga la fila de referencia y el
+  // plan extendido, y nObraVigente queda en 1 — inerte, porque calcPlanCash no lo lee.
+  // nObra NO puede ser 0: calcPlan36 divide por él y la pantalla imprime "Infinity".
+  // `refuerzosDefault` vacío a propósito: con nObra=1 el refuerzo de 'posesion' caería en el
+  // mes 1 y cada cotización arrancaría con un 20 % extra que nadie pidió.
+  terminadas: {
+    nombre: 'Unidades Terminadas',
+    nombreCorto: 'Terminadas',
+    usaEdilia: false,
+    // Mismos ponderadores que Sensum: hoy todo el stock viene de ahí. Cubrir los cuatro
+    // tipos de metro (para que entre stock de cualquier origen) es pendiente de alta prioridad.
+    superficies: {
+      m2subsuelo: { franquicia: 0, coef: 1,    columna: 'm2 subsuelo' },
+      m2cub:      { franquicia: 0, coef: 1,    columna: 'm2 Cubiertos' },
+      m2semi:     { franquicia: 0, coef: 0.50, columna: 'm2 semicubiertos' },
+      m2terraza:  { franquicia: 0, coef: 0.50, columna: 'm2 Terrazas' },
+    },
+    // "Departamento + Cochera": la cochera está incluida en el precio y NO es una unidad
+    // aparte del inventario. Como la lista es cerrada POR PROYECTO, agregarlo acá no toca
+    // Sensum ni Terrazas. Al no haber complementarias, el paquete es siempre la unidad sola.
+    tiposUnidad: ['Departamento + Cochera', 'Departamento', 'Local', 'Cochera', 'Baulera'],
+    // Las cocheras NO se venden por separado acá: van dentro del precio de la unidad. La
+    // minuta omite la línea "Complementos" por eso (si no, "Sin complementos" sobre una
+    // unidad que dice "+ cochera" se lee como que la cochera no está). Los otros proyectos
+    // no declaran la bandera → la línea sigue saliendo igual que siempre.
+    complementosSeparados: false,
+    params: {
+      antMinPct: 20, integracionMinPct: 50, antDefaultPct: 20,
+      aportesMinPosesionPct: 20,
+      nObraVigente: 1,
+      nTotalMax: 60,
+      tasaMensualSaldo: 1,
+      refuerzosDefault: [],
+      umbralObraM2: 1500,
+      giaPct: 4,
+      planesVisibles: { '36c': false, 'ext': false },
+    },
+  },
 };
 
 // Mapa de nombres legacy → id (migración 3.0→4.0 y tolerancia en imports)
@@ -2497,6 +2536,30 @@ const BRANDS = {
       'brand-shadow-rgb': '62,21,33',
       'gray-50': '#faf8f6', 'gray-100': '#f3efea', 'gray-200': '#e6dfd6', 'gray-300': '#cfc4b8',
       'gray-400': '#b0a193', 'gray-500': '#7f7063', 'gray-600': '#62554b', 'gray-700': '#463c35', 'gray-800': '#2e2723',
+    },
+  },
+  // Unidades Terminadas (index_92): bucket transversal de stock terminado — las unidades
+  // pueden venir de cualquier emprendimiento, así que la identidad es la del DESARROLLADOR
+  // (negro + Pantone 375 C de la landing), no la de un proyecto. Sin logoSVG: cae en el
+  // wordmark tipográfico, igual que Qiudad.
+  terminadas: {
+    nombre: 'Unidades Terminadas', tagline: 'Listas para habitar',
+    razonSocial: 'Plazaverde S.A.',
+    logoSVG: null,
+    logoColor: null,
+    tokens: {
+      'brand-dark': '#1A1A1A',           // negro Plazaverde (landing-logo)
+      'brand-mid': '#5B7F12',            // derivado: 375 C oscurecido para texto sobre blanco (AA)
+      'brand-light': '#97D700',          // Pantone 375 C (filete de la landing)
+      'brand-pale': '#F0F7E0',           // derivado (tinte de 375 C)
+      'brand-cream': '#F7FAF0',          // derivado
+      'brand-mist': '#FAFCF6',           // derivado
+      'brand-grad': 'linear-gradient(160deg, #4A4A4A 0%, #97D700 50%, #1A1A1A 100%)',
+      'brand-font-display': "'DM Sans', sans-serif",   // sin fuente nueva: es la del cuerpo
+      'brand-ink': '#1A1A1A', 'brand-paper': '#F5F3EE', 'brand-paper-alt': '#FAFAF7', 'brand-rule': '#D6D6CE',
+      'brand-shadow-rgb': '26,26,26',
+      'gray-50': '#fafaf8', 'gray-100': '#f2f2ee', 'gray-200': '#e4e4de', 'gray-300': '#c8c8c0',
+      'gray-400': '#a0a098', 'gray-500': '#71716a', 'gray-600': '#575751', 'gray-700': '#3d3d38', 'gray-800': '#272724',
     },
   },
 };
@@ -2626,7 +2689,7 @@ function nombreProyecto(id) { const c = proyectosConfig[id || proyectoActivo]; r
 // Unidades por proyecto. `unidades` (variable legacy, referenciada en todo el archivo
 // y expuesta como window.unidades) SIEMPRE apunta al array del proyecto activo.
 // Los arrays se mutan con splice para preservar referencias vivas.
-let unidadesPorProyecto = { qiudad: unidades, sensum: [], terrazas: [] };
+let unidadesPorProyecto = { qiudad: unidades, sensum: [], terrazas: [], terminadas: [] };
 if (proyectoActivo !== 'qiudad') {
   if (!unidadesPorProyecto[proyectoActivo]) unidadesPorProyecto[proyectoActivo] = [];
   unidades = unidadesPorProyecto[proyectoActivo];
@@ -3441,11 +3504,17 @@ function planesDelProyecto(opts) {
     if (pv['180c']) lista.push({ key: '180c', label: '180 cuotas', fn: calcPlan180, esEdilia: true,  moneda: 'ARS', cantCuotas: 180, grupo: 'finARS', gia: 'ref' });
     if (pv['240c']) lista.push({ key: '240c', label: '240 cuotas', fn: calcPlan240, esEdilia: true,  moneda: 'ARS', cantCuotas: 240, grupo: 'finARS', gia: 'ref' });
   } else {
+    // index_92: la rama no-Edilia ahora respeta planesVisibles, igual que la de arriba. Antes
+    // empujaba las dos filas sin consultarlo, así que un proyecto de solo contado era imposible.
+    // El `?? true` es deliberado: Sensum y Terrazas no tienen las claves '36c'/'ext' en su
+    // planesVisibles (sus defaults son los cinco plazos Edilia), y sin el fallback se quedaban
+    // sin plan extendido de un día para el otro.
+    const pv = params.planesVisibles || {};
     const nMax = params.nTotalMax || (nObra + 1);
     const nSel = (opts && opts.nTotal) || (typeof planState !== 'undefined' && planState.nTotal) || nMax;
     const nTot = Math.min(nMax, Math.max(nObra + 1, nSel));
-    lista.push({ key: '36c', label: nObra + ' cuotas', fn: calcPlan36, esEdilia: false, moneda: 'USD', cantCuotas: nObra, grupo: 'precio', gia: 'ref' });
-    lista.push({ key: 'ext', label: nTot + ' cuotas', fn: calcPlanExtendidoN(nTot), esEdilia: false, moneda: 'USD', cantCuotas: nTot, grupo: 'ext', gia: 'ref', nTotal: nTot });
+    if (pv['36c'] ?? true) lista.push({ key: '36c', label: nObra + ' cuotas', fn: calcPlan36, esEdilia: false, moneda: 'USD', cantCuotas: nObra, grupo: 'precio', gia: 'ref' });
+    if (pv['ext'] ?? true) lista.push({ key: 'ext', label: nTot + ' cuotas', fn: calcPlanExtendidoN(nTot), esEdilia: false, moneda: 'USD', cantCuotas: nTot, grupo: 'ext', gia: 'ref', nTotal: nTot });
   }
   return lista;
 }
@@ -3775,6 +3844,11 @@ function generarMinuta() {
     key: r.key, label: r.key === 'cash' ? 'Oferta pago contado' : r.label,
     data: calc(r.fn), esEdilia: r.esEdilia, grupo: r.grupo,
   }));
+  // index_92: proyecto con SOLO CONTADO habilitado (Unidades Terminadas). Dos consecuencias
+  // en el documento: el precio de referencia no corresponde a ningún plan que el cliente
+  // pueda tomar (y "en 1 cuotas durante la obra" sobre una unidad terminada es absurdo), y
+  // la tabla queda con encabezados y cero filas porque el contado nunca tuvo fila propia.
+  const soloContadoMin = planes.length === 1 && planes[0].key === 'cash';
 
   // GIA: cargo del desarrollador (no del fideicomiso, no entra al motor financiero).
   // Cash → giaPct% × precioCash (= totalUSD del plan cash).
@@ -3902,6 +3976,12 @@ function generarMinuta() {
   if (paquete.cocheras.length > 0) complementos.push(`${paquete.cocheras.length} cochera${paquete.cocheras.length>1?'s':''}`);
   if (paquete.bauleras.length > 0) complementos.push(`${paquete.bauleras.length} baulera${paquete.bauleras.length>1?'s':''}`);
   const detalleComplementos = complementos.length > 0 ? complementos.join(' + ') : 'Sin complementos';
+  // index_92: en Unidades Terminadas la cochera va incluida en el precio y la descripción de
+  // la unidad ya lo dice ("... + cochera"), así que imprimir "Complementos: Sin complementos"
+  // se lee como si NO estuviera incluida. El proyecto lo declara con complementosSeparados:
+  // false; donde las cocheras/bauleras se venden aparte (los otros tres) la línea sigue igual.
+  const mostrarComplementos = complementos.length > 0 ||
+    (proyectoCfg().complementosSeparados !== false);
 
   // Label del titular de precio: "Precio unidad {codigo}" + complementos si los hay.
   const labelPrecioMinuta = `Precio unidad ${u.codigo}${complementos.length ? ' + ' + complementos.join(' + ') : ''}`;
@@ -3928,7 +4008,7 @@ function generarMinuta() {
           ${u.vista ? u.vista : ''}${u.orientacion ? ' · ' + u.orientacion : ''}
         </div>
         <div class="minuta-unidad-detalle">${detalleSuperficie} · Total ${fmt(m2total,2)} m²</div>
-        <div class="minuta-unidad-detalle"><span class="minuta-key">Complementos:</span> ${detalleComplementos}</div>
+        ${mostrarComplementos ? `<div class="minuta-unidad-detalle"><span class="minuta-key">Complementos:</span> ${detalleComplementos}</div>` : ''}
       </div>
 
       <div class="minuta-disclaimer">
@@ -3936,7 +4016,14 @@ function generarMinuta() {
       </div>
 
       <div class="minuta-seccion">
-        <div class="minuta-seccion-titulo">Comparativa de planes</div>
+        <div class="minuta-seccion-titulo">${soloContadoMin ? 'Precio' : 'Comparativa de planes'}</div>
+        ${soloContadoMin ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#6b8268;margin-bottom:4px;">${labelPrecioMinuta}</div>
+          <div style="font-family:var(--brand-font-display);font-size:26px;color:var(--brand-dark);line-height:1;">${fmtUSD(totalCashUSD)}</div>
+          <div style="font-size:11px;color:#6b8268;margin-top:4px;">Pago contado</div>
+          <div style="font-size:9pt;color:#555;margin-top:10px;"><strong>Gastos de Instrumentación y Administración (GIA):</strong> USD ${fmt(Math.round(giaCashUSD))}.</div>
+        </div>` : `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:14px;">
           <div>
             <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#6b8268;margin-bottom:4px;">${labelPrecioMinuta}</div>
@@ -3957,7 +4044,8 @@ function generarMinuta() {
               return `<span style="color:#6b8268;font-family:'DM Sans',sans-serif;">${nm}</span> ${fmtUSD(sp.plan.totalUSD)}`;
             }).join('<span style="color:#b8b8ac;margin:0 4px;">+</span>')}</div>` : ''}
           </div>
-        </div>
+        </div>`}
+        ${soloContadoMin ? '' : `
         <table class="minuta-tabla">
           <thead>
             <tr>
@@ -3968,7 +4056,7 @@ function generarMinuta() {
             </tr>
           </thead>
           ${filasConGIA}
-        </table>
+        </table>`}
         ${refuerzosNorm.length > 0 ? `<div style="font-size:9pt;color:#555;margin-top:6px;">${leyendaRefuerzosTexto(true)}</div>` : ''}
       </div>
       ${cuadroMarcha}
@@ -4958,6 +5046,19 @@ function renderCotizador(u) {
   const paquete = armarPaquete(u);
   const hayPaquete = paquete.cocheras.length > 0 || paquete.bauleras.length > 0;
 
+  // index_92: un proyecto puede quedar con un solo plan habilitado — hoy Unidades Terminadas,
+  // solo contado. Estas banderas apagan la UI que deja de tener sentido. Son GENERALES, no un
+  // parche para ese proyecto: valen para cualquiera que quede así.
+  //   soloContado     → no hay nada que configurar (anticipo, refuerzos, plazo).
+  //   hayFilasEnTabla → el contado vive en el titular y NUNCA en la tabla; sin otro plan la
+  //                     tabla saldría con encabezados y cero filas.
+  //   hayComplementos → se gatea por INVENTARIO, no por bandera de proyecto: si mañana se
+  //                     cargan cocheras sueltas acá, el bloque reaparece sin tocar nada.
+  const planesHabilitados = planesDelProyecto();
+  const soloContado     = planesHabilitados.length === 1 && planesHabilitados[0].key === 'cash';
+  const hayFilasEnTabla = planesHabilitados.some(p => p.grupo !== 'cash');
+  const hayComplementos = inventarioDisponible('Cochera') > 0 || inventarioDisponible('Baulera') > 0;
+
   // Anticipo: dos pisos. (1) mínimo del anticipo solo (antMinPct). (2) integración mínima
   // (integracionMinPct) sobre anticipo + refuerzos. El piso efectivo del anticipo es
   // max(piso1, piso2 − refuerzos cargados): sacar refuerzos sube el anticipo.
@@ -5009,7 +5110,14 @@ function renderCotizador(u) {
   // Clase y OA
   const claseInfo = u.clase ? CLASES.find(c => c.nombre === u.clase) : null;
 
-  const m2total = (u.m2subsuelo||0) + (u.m2cub||0) + (u.m2semi||0) + (u.m2desc||0);
+  // index_92: las superficies de la card salen de la tabla del proyecto, no de una lista fija.
+  // La lista fija era ['m2subsuelo','m2cub','m2semi','m2desc'] y NO incluía m2terraza, que
+  // Sensum sí declara: una unidad con terrazas mostraba el total sin ellas (UF H404: 161,60
+  // en vez de 221,40) y no tenía tile de terraza. Era un bug previo, no del proyecto nuevo;
+  // se arregla acá porque en Unidades Terminadas casi todo el stock tiene terraza.
+  // Misma fuente que usa detalleSuperficieUnidad() para la minuta y la solicitud.
+  const clavesSupU = clavesSuperficieProyecto(proyectoCfg());
+  const m2total = clavesSupU.reduce((s, k) => s + (Number(u[k]) || 0), 0);
   main.innerHTML = `
     <!-- HEADER UNIDAD -->
     <div class="unidad-header">
@@ -5043,26 +5151,11 @@ function renderCotizador(u) {
     <div class="card" style="margin-bottom:20px;">
       <div class="card-title">Datos de la unidad</div>
       <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:16px;">
-        ${(u.m2subsuelo||0) > 0 ? `
+        ${clavesSupU.map(k => (Number(u[k]) || 0) > 0 ? `
         <div class="result-item">
-          <div class="result-label">M² subsuelo</div>
-          <div class="result-value" style="font-size:22px;">${fmt(u.m2subsuelo,2)}</div>
-        </div>` : ''}
-        ${(u.m2cub||0) > 0 ? `
-        <div class="result-item">
-          <div class="result-label">M² cubiertos</div>
-          <div class="result-value" style="font-size:22px;">${fmt(u.m2cub,2)}</div>
-        </div>` : ''}
-        ${(u.m2semi||0) > 0 ? `
-        <div class="result-item">
-          <div class="result-label">M² semicubiertos</div>
-          <div class="result-value" style="font-size:22px;">${fmt(u.m2semi,2)}</div>
-        </div>` : ''}
-        ${(u.m2desc||0) > 0 ? `
-        <div class="result-item">
-          <div class="result-label">M² descubiertos</div>
-          <div class="result-value" style="font-size:22px;">${fmt(u.m2desc,2)}</div>
-        </div>` : ''}
+          <div class="result-label">${labelSuperficie(k, proyectoCfg())}</div>
+          <div class="result-value" style="font-size:22px;">${fmt(Number(u[k]) || 0, 2)}</div>
+        </div>` : '').join('')}
         <div class="result-item" style="border-left:2px solid var(--gray-100);padding-left:16px;">
           <div class="result-label">M² totales</div>
           <div class="result-value" style="font-size:22px;color:var(--brand-dark);font-weight:700;">${fmt(m2total,2)}</div>
@@ -5078,7 +5171,12 @@ function renderCotizador(u) {
       </div>
     </div>
 
-    <!-- COMPLEMENTOS (cocheras / bauleras) — arriba de Condiciones de pago -->
+    <!-- COMPLEMENTOS (cocheras / bauleras) — arriba de Condiciones de pago.
+         index_92: solo si hay inventario complementario. En Unidades Terminadas la
+         cochera está incluida en el precio y no existe como unidad, así que el
+         selector no tendría qué adjuntar: sería decorativo hoy y cobraría dos veces
+         el día que alguien importe cocheras sueltas al proyecto. -->
+    ${hayComplementos ? `
     <div class="card" style="margin-bottom:16px;padding:14px 18px;">
       <div class="card-title" style="margin-bottom:10px;">Complementos</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
@@ -5113,9 +5211,12 @@ function renderCotizador(u) {
       <div style="margin-top:10px;font-size:11px;color:var(--gray-500);">
         Anticipo y refuerzos se prorratean entre las unidades del paquete por precio de referencia.
       </div>` : ''}
-    </div>
+    </div>` : ''}
 
-    <!-- 2. PANEL DE ENTRADA UNIFICADO -->
+    <!-- 2. PANEL DE ENTRADA UNIFICADO.
+         index_92: con un solo plan de contado no hay anticipo, refuerzos ni plazo
+         que configurar; el bloque pediría datos que ningún plan consume. -->
+    ${!soloContado ? `
     <div class="card" style="margin-bottom:20px;">
       <div class="card-title">Condiciones de pago</div>
       <div style="display:grid;grid-template-columns:1fr 2fr;gap:20px;align-items:start;">
@@ -5188,11 +5289,11 @@ function renderCotizador(u) {
           <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Hasta ${params.nTotalMax} cuotas. El saldo a posesión se financia en cuotas decrecientes (${fmt(params.tasaMensualSaldo ?? 0, 2)} % mensual sobre saldo).</div>
         </div>` : ''}
       </div>
-    </div>
+    </div>` : ''}
     <!-- 2. COMPARATIVA DE PLANES -->
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-        <div class="card-title" style="margin-bottom:0;">Comparativa de planes</div>
+        <div class="card-title" style="margin-bottom:0;">${soloContado ? 'Precio' : 'Comparativa de planes'}</div>
         <!-- index_88: la minuta pasa a primaria y agrandada, y queda a la derecha del todo.
              Antes era btn-secondary btn-sm (gris chico) compitiendo de igual a igual con los
              cinco o seis "Solicitar" de la tabla: el vendedor no la veía y pedía reserva sin
@@ -5203,8 +5304,10 @@ function renderCotizador(u) {
               📊 Matriz de recaudación
             </button>
           ` : ''}
+          <!-- index_92: "con opciones de pago" solo tiene sentido donde hay más de un plan.
+               Con solo contado el rótulo prometía algo que el documento no trae. -->
           <button onclick="abrirModalMinuta()" class="btn btn-primary" style="font-size:15px;padding:12px 22px;white-space:nowrap;" title="Imprimir/guardar como PDF la minuta con la configuración actual">
-            🖨 Generar minuta con opciones de pago
+            🖨 Generar minuta${soloContado ? '' : ' con opciones de pago'}
           </button>
         </div>
       </div>
@@ -5214,6 +5317,20 @@ function renderCotizador(u) {
         if (paquete.bauleras.length > 0) comps.push(`${paquete.bauleras.length} baulera${paquete.bauleras.length>1?'s':''}`);
         const labelPrecio = `Precio unidad ${u.codigo}${comps.length ? ' + ' + comps.join(' + ') : ''}`;
         const esVendedor = window.currentUserRole !== 'admin';
+        // index_92: con solo contado habilitado, el precio de referencia no corresponde a
+        // ningún plan que el cliente pueda tomar — es el de una financiación que no existe
+        // en este proyecto. Se muestra el contado en grande y se lleva ahí el botón de
+        // reserva, que es la única vía: el contado nunca tuvo fila en la tabla.
+        // La rama de abajo queda intacta para los proyectos con financiación.
+        if (soloContado) return `
+      <div style="display:flex;justify-content:flex-start;align-items:center;gap:20px;padding:2px 0 0;">
+        <div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--gray-500);margin-bottom:6px;">${labelPrecio}</div>
+          <div style="font-family:var(--brand-font-display);font-size:32px;color:var(--brand-dark);letter-spacing:-0.02em;line-height:1;">${fmtUSD(cash.totalUSD)}</div>
+          <div style="font-size:12px;color:var(--gray-500);margin-top:6px;">Pago contado</div>
+          ${esVendedor ? `<div style="margin-top:12px;"><button onclick="abrirModalSolicitarReserva('cash')" class="btn btn-primary btn-sm">Solicitar reserva</button></div>` : ''}
+        </div>
+      </div>`;
         return `
       <!-- index_88: precio de lista y oferta de contado uno al lado del otro. Antes el
            space-between los mandaba a extremos opuestos de la fila y en pantalla ancha
@@ -5241,6 +5358,10 @@ function renderCotizador(u) {
         </div>
       </div>`;
       })()}
+      ${/* index_92: el contado no tiene fila en la tabla — vive en el titular. Si el proyecto
+            sólo ofrece contado, la tabla quedaría con encabezados y cero filas, así que no se
+            dibuja. Para los proyectos con financiación hayFilasEnTabla es true y nada cambia. */''}
+      ${hayFilasEnTabla ? `
       <div style="overflow-x:auto;">
         <table class="comp-table">
           <thead><tr>
@@ -5322,15 +5443,18 @@ function renderCotizador(u) {
             </tbody>
           ` : ''}
         </table>
-      </div>
+      </div>` : ''}
       <!-- index_88: segunda salida a la minuta al pie de la comparativa. El botón de arriba
            queda fuera de pantalla justo cuando el vendedor terminó de configurar anticipo y
-           refuerzos y está mirando la tabla — que es el momento en que decide. -->
+           refuerzos y está mirando la tabla — que es el momento en que decide.
+           index_92: con solo contado no hay tabla ni nada que configurar, así que los dos
+           botones quedarían pegados uno debajo del otro. Va solo el de arriba. -->
+      ${soloContado ? '' : `
       <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--gray-200);display:flex;justify-content:center;">
         <button onclick="abrirModalMinuta()" class="btn btn-primary" style="font-size:15px;padding:12px 24px;white-space:nowrap;" title="Imprimir/guardar como PDF la minuta con la configuración actual">
           🖨 Generar minuta con opciones de pago
         </button>
-      </div>
+      </div>`}
     </div>
 
     ${/* HIBERNADO 2026-05-13 — cotizador inverso fuera de uso. Para reactivar:
@@ -9171,7 +9295,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!b) { errores.push(id + ' sin marca'); return; }
       tokensReq.forEach(k => { if (!b.tokens || !b.tokens[k]) errores.push(id + ' sin token ' + k); });
       if (!b.nombre || !b.tagline) errores.push(id + ' sin nombre/tagline');
-      if (id !== 'qiudad' && !(b.logoSVG && /^<svg[\s\S]*<\/svg>$/.test(b.logoSVG.trim()))) errores.push(id + ' sin logoSVG válido');
+      // index_92: marcas que se imprimen como wordmark tipográfico (nombre + tagline) en vez de
+      // logo vectorial — headerDocumentoMarca ya tiene ese camino. Qiudad siempre fue así.
+      // Unidades Terminadas también: agrupa stock de cualquier desarrollo, así que no le
+      // corresponde el logo de ninguno. El resto SÍ debe traer SVG válido.
+      const MARCAS_WORDMARK = ['qiudad', 'terminadas'];
+      if (!MARCAS_WORDMARK.includes(id) && !(b.logoSVG && /^<svg[\s\S]*<\/svg>$/.test(b.logoSVG.trim()))) errores.push(id + ' sin logoSVG válido');
       if (b.logoSVG && /[`]|\$\{/.test(b.logoSVG)) errores.push(id + ' logoSVG con caracteres peligrosos para template');
     });
     // Qiudad == :root (el default del CSS es la marca Qiudad, byte a byte)
@@ -9337,6 +9466,44 @@ document.addEventListener('DOMContentLoaded', () => {
       params = paramsPrev; window.params = params;
       paramsPendientes = pendPrev; paramsEfimeros = efiPrev;
       actualizarAvisoParams();
+    }
+    return errores.length === 0 ? true : errores.join(' | ');
+  });
+
+  test('T1', 1, 'Unidades Terminadas: planesVisibles apaga referencia y extendido (solo contado) y el fallback "?? true" no se lo prende; los otros proyectos conservan sus planes (index_92)', () => {
+    const errores = [];
+    const proyPrev = proyectoActivo;
+    try {
+      // La config declarada apaga los dos planes de la rama no-Edilia…
+      const pvDecl = (PROYECTOS_DEFAULT.terminadas.params.planesVisibles) || {};
+      if (pvDecl['36c'] !== false) errores.push('36c no viene apagado en la config');
+      if (pvDecl['ext'] !== false) errores.push('ext no viene apagado en la config');
+      // …y migrarParams no se los prende (solo rellena las claves Edilia).
+      const pMig = JSON.parse(JSON.stringify(PROYECTOS_DEFAULT.terminadas.params));
+      migrarParams(pMig);
+      if (pMig.planesVisibles['36c'] !== false) errores.push('migrarParams prendió 36c');
+      if (pMig.planesVisibles['ext'] !== false) errores.push('migrarParams prendió ext');
+      if (PROYECTOS_DEFAULT.terminadas.usaEdilia !== false) errores.push('terminadas no debería usar Edilia');
+      if (!(PROYECTOS_DEFAULT.terminadas.tiposUnidad || []).includes('Departamento + Cochera')) {
+        errores.push('falta el tipo "Departamento + Cochera"');
+      }
+      // El registro de planes devuelve SOLO contado parado en terminadas…
+      cambiarProyecto('terminadas', true);
+      const keysT = planesDelProyecto({ nTotal: 60 }).map(r => r.key);
+      if (keysT.length !== 1 || keysT[0] !== 'cash') errores.push('terminadas → ' + keysT.join(','));
+      // …y el fallback "?? true" de la rama no-Edilia no le saca el extendido a los otros.
+      cambiarProyecto('sensum', true);
+      const keysS = planesDelProyecto({ nTotal: 60 }).map(r => r.key);
+      ['cash', '36c', 'ext'].forEach(k => { if (!keysS.includes(k)) errores.push('sensum perdió ' + k); });
+      cambiarProyecto('terrazas', true);
+      const keysTz = planesDelProyecto({ nTotal: 60 }).map(r => r.key);
+      ['cash', '36c', 'ext'].forEach(k => { if (!keysTz.includes(k)) errores.push('terrazas perdió ' + k); });
+      cambiarProyecto('qiudad', true);
+      const keysQ = planesDelProyecto({ nTotal: 60 }).map(r => r.key);
+      ['cash', '36c', '60c', '120c'].forEach(k => { if (!keysQ.includes(k)) errores.push('qiudad perdió ' + k); });
+      if (keysQ.includes('ext')) errores.push('qiudad no debería traer el extendido');
+    } finally {
+      cambiarProyecto(proyPrev, true);
     }
     return errores.length === 0 ? true : errores.join(' | ');
   });
