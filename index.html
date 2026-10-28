@@ -2927,18 +2927,6 @@ function tiposDeFamilia(familia) {
     return { tipo, unidades: us, n: us.length, min: Math.min(...precios), max: Math.max(...precios) };
   }).sort((a, b) => a.tipo.localeCompare(b.tipo));
 }
-// Unidades de un tipo que el vendedor puede elegir: las disponibles, más la que ya tenga
-// elegida (aunque se haya reservado mientras cotizaba — no se saca sin avisar).
-function unidadesElegiblesDeTipo(tipo, codigoActual) {
-  return unidades.filter(u => esComplemento(u) && tipoUnidad(u) === tipo &&
-    (u.estado === 'disponible' || u.codigo === codigoActual));
-}
-// Elección automática dentro de un tipo: LA MÁS BARATA disponible, no la primera del array.
-// Pedido original: "la primera disponible". Se cambió a la más barata porque "la primera" es
-// el orden de importación del Excel — exactamente la dependencia que este cambio elimina. Si
-// los precios de un tipo son iguales (que es lo esperable), las dos reglas dan lo mismo; si
-// difieren, con esta el cliente nunca queda sobrecotizado por un accidente de orden, y el
-// vendedor siempre puede subir eligiendo la unidad puntual.
 // Etiqueta de un componente del paquete en pantalla y en los documentos. Muestra el TIPO
 // real ('Cochera XL'), no la familia: es lo que distingue qué está comprando el cliente.
 // index_93: antes imprimía 'Cochera' a secas y una XL era indistinguible de una estándar.
@@ -3160,17 +3148,14 @@ function semaforo(descuento) {
 // ═══════════════════════════════════════════════════════════════════
 // PAQUETE: helpers para cocheras y bauleras
 // ═══════════════════════════════════════════════════════════════════
-// Toma N primeras unidades disponibles de una clase complemento dada.
-// Auto-asignación silenciosa: el comercial pide "1 cochera", el sistema
-// elige una específica del inventario. El cliente no ve el código.
-// index_94: resuelve ENTRADAS {tipo, codigo} a unidades concretas, SOLO para poder cotizar.
-// - Con `codigo` (el vendedor fijó una UF a propósito): esa unidad, sin filtrar por estado.
-//   Si se reserva mientras cotiza, sacarla cambiaría el precio en silencio; se mantiene y la
-//   card la marca (complementosNoDisponibles()).
-// - Sin `codigo` (el caso normal, "a asignar"): una unidad REPRESENTATIVA libre de ese tipo.
-//   Dentro de un tipo todas valen lo mismo, así que sirve para el precio; la UF definitiva
-//   la fija la aprobación. No se repite una unidad dentro del mismo paquete.
-// Tolera la forma de index_93 (array de strings) por si queda algún planState viejo en vuelo.
+// Resuelve ENTRADAS {tipo, codigo} a unidades concretas, SOLO para poder cotizar.
+// index_95: desde el cotizador el `codigo` siempre viene en null — se elige un TIPO y se
+// toma una unidad REPRESENTATIVA libre de ese tipo. Dentro de un tipo todas valen lo mismo,
+// así que sirve para el precio; la UF definitiva la asigna la aprobación de la reserva.
+// No se repite una unidad dentro del mismo paquete.
+// La rama con `codigo` queda para releer un paquete reconstruido desde una solicitud ya
+// aprobada (ahí la UF existe) y no filtra por estado: una unidad ya reservada por esa misma
+// solicitud tiene que seguir resolviendo.
 function normalizarEntradaComplemento(e) {
   if (!e) return null;
   if (typeof e === 'string') return { tipo: null, codigo: e };
@@ -3192,15 +3177,6 @@ function seleccionarComplementos(familia, entradas) {
   });
   return res;
 }
-// ¿El vendedor fijó esta UF a propósito, o es la representativa de un tipo "a asignar"?
-// Los documentos del cliente solo nombran la UF cuando está fijada.
-function complementoFijado(codigo) {
-  const m = (planState && planState.complementos) || {};
-  return Object.keys(m).some(f => (m[f] || [])
-    .map(normalizarEntradaComplemento).filter(Boolean)
-    .some(e => e.codigo === codigo));
-}
-
 // Complementos de un paquete, tolerando la forma previa a index_93 (solo .cocheras y
 // .bauleras). Hay paquetes armados a mano — _paqueteSolo, los de los tests — y conviene
 // que sigan funcionando sin tener que tocarlos uno por uno.
@@ -3218,16 +3194,13 @@ function entradasDePaquete(p) {
     familia: familiaUnidad(u), tipo: tipoUnidad(u), codigo: u.codigo, unidad: u,
   }));
 }
-// Etiqueta de un complemento para documentos: el tipo, y la UF solo si está fijada.
+// Etiqueta de un complemento para documentos. En el cotizador el `codigo` siempre viene en
+// null (la UF la asigna la aprobación); una solicitud ya aprobada sí lo trae, y ahí se
+// imprime — es lo que hace trazable el papel reimpreso desde la bandeja.
 function labelEntradaComplemento(e, conDetalle) {
   if (!e) return '';
   if (e.codigo) return `${e.tipo} (${e.codigo})`;
   return conDetalle ? `${e.tipo} · unidad a asignar` : e.tipo;
-}
-// Complementos del paquete que ya no están disponibles (los eligió el vendedor y mientras
-// tanto otro los reservó o vendió). La card los muestra marcados en vez de borrarlos.
-function complementosNoDisponibles(paquete) {
-  return complementosDePaquete(paquete).filter(u => u.estado !== 'disponible');
 }
 
 // Arma el paquete a partir de la unidad principal + planState.complementos.
@@ -5493,10 +5466,6 @@ async function accionDevolverPendienteSolicitud(docId) {
 // Se dibuja una columna por familia con stock, así una familia ad-hoc del proyecto aparece
 // sola, sin tocar nada.
 function renderCardComplementos(paquete) {
-  // index_94: solo las UF FIJADAS pueden quedar no disponibles; las "a asignar" resuelven
-  // siempre contra stock libre.
-  const noDisp = entradasDePaquete(paquete)
-    .filter(e => e.codigo && e.unidad.estado !== 'disponible').map(e => e.unidad);
   const entradas = entradasDePaquete(paquete);
   const columnas = familiasConStock().map(familia => {
     const elegidas = entradas.filter(e => e.familia === familia ||
@@ -5518,24 +5487,16 @@ function renderCardComplementos(paquete) {
       </button>`;
     }).join('');
 
-    // index_94: por default la UF queda "a asignar" y se fija al aprobar la reserva. El
-    // selector es un override para cuando el cliente quiere una unidad puntual.
+    // index_95: NO se elige la unidad. La fila solo dice el tipo y su precio; la UF la
+    // asigna la aprobación. Fijar una UF puntual era un override opcional de index_94 y se
+    // sacó: reintroducía la colisión que este diseño elimina (dos vendedores apuntando a la
+    // misma UF), y si una cochera se distingue de otra por algo que importa comercialmente,
+    // eso es un TIPO, no una excepción sobre una unidad.
     const filas = elegidas.map((e) => {
       const i = typeof e.idx === 'number' ? e.idx : elegidas.indexOf(e);
-      const opciones = unidadesElegiblesDeTipo(e.tipo, e.codigo).map(x =>
-        `<option value="${x.codigo}" ${x.codigo === e.codigo ? 'selected' : ''}>${x.codigo} · ${fmtUSD(x.precioReferencia)}${x.estado !== 'disponible' ? ' · ' + x.estado : ''}</option>`
-      ).join('');
-      const alerta = (e.codigo && e.unidad.estado !== 'disponible')
-        ? `<span style="color:#991b1b;font-size:10px;white-space:nowrap;" title="Se reservó o vendió mientras cotizabas. No se saca sola para no cambiarte el precio sin avisar.">⚠ ${e.unidad.estado}</span>` : '';
-      return `<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
-        <span style="font-size:12px;min-width:92px;">${e.tipo}</span>
-        <select onchange="fijarComplementoEspecifico('${familia}',${i},this.value)"
-          class="mono" style="flex:1;min-width:0;font-size:11px;padding:3px 6px;"
-          title="Por default la unidad se asigna al aprobar la reserva. Elegí una UF solo si el cliente quiere esa en particular.">
-          <option value="" ${!e.codigo ? 'selected' : ''}>unidad a asignar</option>
-          ${opciones}
-        </select>
-        ${alerta}
+      return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <span style="font-size:12px;font-weight:600;">${e.tipo}</span>
+        <span style="font-size:11px;color:var(--gray-500);flex:1;">${fmtUSD(e.unidad.precioReferencia)} · unidad a asignar al aprobar</span>
         <button class="btn btn-secondary btn-sm" onclick="quitarComplemento('${familia}',${i})"
           style="padding:2px 8px;font-size:11px;" title="Quitar">✕</button>
       </div>`;
@@ -5562,11 +5523,6 @@ function renderCardComplementos(paquete) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;">
         ${columnas}
       </div>
-      ${noDisp.length > 0 ? `
-      <div style="margin-top:10px;font-size:11px;color:#991b1b;">
-        ${noDisp.map(c => `${tipoUnidad(c)} ${c.codigo}`).join(', ')}: ya no ${noDisp.length > 1 ? 'están disponibles' : 'está disponible'}.
-        Sigue${noDisp.length > 1 ? 'n' : ''} en la cotización hasta que ${noDisp.length > 1 ? 'los' : 'lo'} saques o ${noDisp.length > 1 ? 'los' : 'lo'} cambies.
-      </div>` : ''}
       ${complementosDePaquete(paquete).length > 0 ? `
       <div style="margin-top:10px;font-size:11px;color:var(--gray-500);">
         Anticipo y refuerzos se prorratean entre las unidades del paquete por precio de referencia.
@@ -6097,11 +6053,10 @@ function renderFilaComparativa(plan, u, esEdilia) {
     const u_ = sp.unidad;
     // index_93: el tipo real ('Cochera XL'), no la familia. El código lo ve solo el admin,
     // como venía siendo; en la comparativa del vendedor alcanza con el tipo.
-    // index_94: el código solo se muestra si el vendedor fijó esa UF; si es "a asignar",
-    // la unidad que ve el motor es una representativa y mostrarla induciría a error.
-    const label = esComplemento(u_)
-      ? ((esAdmin && complementoFijado(u_.codigo)) ? `${tipoUnidad(u_)} <span style="color:var(--gray-400);font-size:11px;font-style:italic;">(${u_.codigo})</span>` : tipoUnidad(u_))
-      : (u_.codigo || 'Depto');
+    // index_95: el complemento se nombra siempre por TIPO. La unidad que ve el motor es una
+    // representativa del tipo —la UF la asigna la aprobación— así que imprimirla acá, aunque
+    // fuera solo para el admin, induciría a error.
+    const label = esComplemento(u_) ? tipoUnidad(u_) : (u_.codigo || 'Depto');
     const subPlanData = { ...sp.plan, anticipo: sp.anticipo, refuerzos: sp.refuerzos };
     return filaHTML(subPlanData, label, 'sub', false);
   }).join('');
@@ -6393,24 +6348,6 @@ function quitarComplemento(familia, idx) {
   const i = Number(idx);
   if (!(i >= 0 && i < lista.length)) return;
   lista.splice(i, 1);
-  reponerPlanInicial();
-}
-// Override opcional: fijar una UF puntual, o volver a "a asignar" con valor vacío.
-function fijarComplementoEspecifico(familia, idx, codigoNuevo) {
-  const lista = entradasDeFamilia(familia);
-  const i = Number(idx);
-  if (!(i >= 0 && i < lista.length)) { renderCotizador(unidadSeleccionada); return; }
-  const cod = codigoNuevo || null;
-  // No permitir fijar dos veces la misma UF dentro del paquete.
-  if (cod && lista.some((e, j) => j !== i && e.codigo === cod)) { renderCotizador(unidadSeleccionada); return; }
-  // La UF tiene que ser del MISMO tipo que la entrada: si no, la etiqueta diría un tipo
-  // ("Cochera") y el precio vendría de otro ("Cochera XL"). El select de la card solo ofrece
-  // unidades del tipo, pero la función se valida igual.
-  if (cod) {
-    const u = unidades.find(x => x.codigo === cod && esComplemento(x));
-    if (!u || tipoUnidad(u) !== lista[i].tipo) { renderCotizador(unidadSeleccionada); return; }
-  }
-  lista[i] = { tipo: lista[i].tipo, codigo: cod };
   reponerPlanInicial();
 }
 function limpiarComplementos(familia) {
