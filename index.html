@@ -1366,27 +1366,42 @@
     };
 
     // ── Resolución de rol: cascada espejo de las Security Rules (index_86) ──
-    // 1. email_verified && email ∈ ADMIN_EMAILS          → 'admin'
-    // 2. email_verified && email termina DOMINIO_VENDEDOR → 'vendedor'
-    // 3. existe usuarios/{uid}                            → doc.role (legacy, sin gate de verified)
-    // 4. nada                                             → null (sin acceso)
-    // El gate email_verified en 1–2 neutraliza cuentas password fabricadas con emails
+    // 1. email_verified && email ∈ ADMIN_EMAILS           → 'admin'
+    // 2. usuarios/{uid}.role === 'admin'                  → 'admin'
+    // 3. email_verified && email termina DOMINIO_VENDEDOR → 'vendedor'
+    // 4. existe usuarios/{uid}                            → doc.role (legacy, sin gate de verified)
+    // 5. nada                                             → null (sin acceso)
+    //
+    // index_97 — el paso 2 FALTABA y rompía el espejo. Las rules dicen
+    //   esAdmin() = emailEnListaAdmin() || (tieneLegacy() && rolLegacy() == 'admin')
+    // o sea que el doc legacy con role 'admin' da admin aunque la casilla sea del dominio.
+    // Acá, en cambio, el dominio devolvía 'vendedor' y cortaba antes de leer el doc: a una
+    // persona de @plazaverde.com.ar a la que el admin le ponía role:'admin' en Firestore le
+    // quedaba permiso de admin en el servidor y pantalla de vendedora. Ahora el doc se lee
+    // siempre (salvo que la lista ya haya resuelto) y 'admin' pisa el default del dominio.
+    //
+    // El gate email_verified en 1 y 3 neutraliza cuentas password fabricadas con emails
     // ajenos (con registro re-habilitado, la API pública permite crearlas). Google
     // Workspace entrega verified=true; la rama legacy no lo exige porque los docs
-    // usuarios/{uid} los crea el admin a mano. Solo lee Firestore si 1–2 no aplican.
+    // usuarios/{uid} los crea el admin a mano.
     window._resolverRolCascada = async function(user) {
       const email      = (user.email || '').toLowerCase();
       const verificado = user.emailVerified === true;
-      if (verificado && ADMIN_EMAILS.includes(email))    return 'admin';
-      if (verificado && email.endsWith(DOMINIO_VENDEDOR)) return 'vendedor';
+      if (verificado && ADMIN_EMAILS.includes(email)) return 'admin';
+      const esDominio = verificado && email.endsWith(DOMINIO_VENDEDOR);
+      let rolDoc = null;
       try {
         const rolSnap = await getDoc(doc(db, 'usuarios', user.uid));
-        if (rolSnap.exists()) return rolSnap.data().role || 'vendedor';
-        return null;                        // sin acceso: cuenta ajena
+        if (rolSnap.exists()) rolDoc = rolSnap.data().role || 'vendedor';
       } catch(e) {
         console.warn('Error leyendo rol legacy:', e);
-        return '__error';                   // fallo de red/lectura — distinto de "no existe"
+        // Si la casilla es del dominio, el acceso de vendedora no depende de esta lectura:
+        // entra igual que antes. Sin dominio, no hay forma de resolver → error explícito.
+        return esDominio ? 'vendedor' : '__error';
       }
+      if (rolDoc === 'admin') return 'admin';   // el doc manda sobre el default del dominio
+      if (esDominio) return 'vendedor';
+      return rolDoc;                            // rol del doc, o null (sin acceso: cuenta ajena)
     };
 
     // ── Cargar desde Firestore (una vez al login) ──
