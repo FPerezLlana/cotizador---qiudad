@@ -7614,12 +7614,20 @@ function aplicarProyectosCfg(src) {
     if (!s || typeof s !== 'object') return;
     if (!proyectosConfig[id]) proyectosConfig[id] = JSON.parse(JSON.stringify(s));
     else {
+      // index_96: de un proyecto que YA existe en PROYECTOS_DEFAULT solo se toma `params`.
+      //
+      // La ESTRUCTURA (nombre, usaEdilia, superficies, tiposUnidad, familias,
+      // complementosSeparados) la define el código y no hay UI para editarla. Antes el doc
+      // guardado la pisaba en cada carga, así que cualquier cambio de estructura nacía
+      // muerto: el doc de Firestore se serializó hace meses y volvía a imponer su versión.
+      // Fue exactamente lo que pasó con los tipos de cochera y baulera — el import seguía
+      // rechazándolos aunque el código ya los declaraba. Y pudo haber revertido en silencio
+      // otras correcciones de estructura (p. ej. la cuarta superficie de Terrazas, que pasó
+      // de 'm2 Terrazas' a 'm2 desc' en index_??/2026-08-19).
+      //
+      // Lo que el admin sí edita —el panel de Parámetros— vive en `params` y se sigue
+      // leyendo del doc, que es donde tiene que estar.
       const d = proyectosConfig[id];
-      if (s.nombre) d.nombre = s.nombre;
-      if (s.nombreCorto) d.nombreCorto = s.nombreCorto;
-      if (typeof s.usaEdilia === 'boolean') d.usaEdilia = s.usaEdilia;
-      if (s.superficies && typeof s.superficies === 'object') d.superficies = JSON.parse(JSON.stringify(s.superficies));
-      if (Array.isArray(s.tiposUnidad)) d.tiposUnidad = s.tiposUnidad.slice();
       if (s.params && typeof s.params === 'object') d.params = JSON.parse(JSON.stringify(s.params));
     }
     if (proyectosConfig[id].params) migrarParams(proyectosConfig[id].params);
@@ -10021,6 +10029,40 @@ document.addEventListener('DOMContentLoaded', () => {
       if (keysQ.includes('ext')) errores.push('qiudad no debería traer el extendido');
     } finally {
       cambiarProyecto(proyPrev, true);
+    }
+    return errores.length === 0 ? true : errores.join(' | ');
+  });
+
+  test('T3', 1, 'La estructura del proyecto (tiposUnidad, superficies, usaEdilia, nombre) la define el código: el doc guardado solo aporta params (index_96)', () => {
+    const errores = [];
+    const cfgPrev = JSON.parse(JSON.stringify(proyectosConfig));
+    try {
+      // Un doc guardado "viejo" que trae la estructura de antes + params propios.
+      aplicarProyectosCfg({
+        terrazas: {
+          nombre: 'Nombre Viejo', nombreCorto: 'Viejo', usaEdilia: true,
+          tiposUnidad: ['Departamento', 'Local', 'Cochera', 'Baulera'],
+          superficies: { m2cub: { franquicia: 0, coef: 1, columna: 'm2 Cubiertos' } },
+          params: { descMax: 77 },
+        },
+      });
+      const d = proyectosConfig.terrazas;
+      if (d.nombre !== 'Terrazas') errores.push('el doc pisó el nombre: ' + d.nombre);
+      if (d.usaEdilia !== false) errores.push('el doc pisó usaEdilia');
+      if (!d.tiposUnidad.includes('Baulera en subsuelo')) {
+        errores.push('el doc pisó tiposUnidad: ' + d.tiposUnidad.join('|'));
+      }
+      if (!d.superficies.m2desc || d.superficies.m2desc.columna !== 'm2 desc') {
+        errores.push('el doc pisó superficies: ' + Object.keys(d.superficies).join('|'));
+      }
+      if (d.params.descMax !== 77) errores.push('params NO se tomó del doc, y debería');
+      // Un proyecto que el código no conoce sí entra entero (no se pierde data).
+      aplicarProyectosCfg({ zzz_desconocido: { nombre: 'Z', tiposUnidad: ['Departamento'], params: { descMax: 1 } } });
+      if (!proyectosConfig.zzz_desconocido) errores.push('un proyecto desconocido debería entrar entero');
+    } finally {
+      Object.keys(proyectosConfig).forEach(k => { delete proyectosConfig[k]; });
+      Object.keys(cfgPrev).forEach(k => { proyectosConfig[k] = cfgPrev[k]; });
+      params = componerParams(); window.params = params;
     }
     return errores.length === 0 ? true : errores.join(' | ');
   });
