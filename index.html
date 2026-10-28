@@ -2052,12 +2052,28 @@
 // Estado de inputs por plan (persiste entre cambios de tab)
 let clienteData = { nombre: '', apellido: '', celular: '' };
 
+// Tope de complementos por tipo que se pueden adjuntar a una unidad. Venía hardcodeado en
+// los botones 0/1/2 de la card; index_93 lo hace constante.
+const MAX_COMPLEMENTOS = 2;
+
 let planState = {
   anticipo:   null,  // USD absoluto TOTAL del paquete (depto + cocheras + bauleras)
   refuerzos:  [],    // lista de refuerzos independientes: [{ monto (USD abs), mes (literal) }]
                      // El mes es literal y se congela en el snapshot al firmar (no ancla viva).
-  nCocheras:  0,     // cantidad de cocheras a incluir en el paquete (max 2)
-  nBauleras:  0,     // cantidad de bauleras a incluir en el paquete (max 2)
+  // index_93: UNIDADES CONCRETAS, no cantidades. Antes era nCocheras/nBauleras y
+  // seleccionarComplementos hacía .slice(0, n) sobre el array: agarraba las primeras en
+  // orden de importación. Con cocheras de distinto precio (Sensum, Terrazas) eso daba un
+  // precio que dependía del orden de las filas del Excel, y el vendedor no podía elegir.
+  // index_94: mapa familia → ENTRADAS elegidas: { Cochera: [{ tipo:'Cochera XL', codigo:null }] }.
+  // Lo que el vendedor elige es un TIPO, no una unidad: dentro de un tipo todas valen lo mismo,
+  // así que cuál le toca al cliente es logística, no decisión comercial. `codigo` queda en null
+  // ("a asignar") y la UF se fija recién al aprobar la reserva.
+  // Antes (index_93) se fijaba la UF al cotizar: con 58 cocheras idénticas, todos los
+  // vendedores quedaban apuntados a la primera libre y aprobar una auto-rechazaba al resto
+  // por una colisión falsa. `codigo` se usa solo cuando el vendedor fija una UF a propósito.
+  // Por familia y no por tipo, porque MAX_COMPLEMENTOS es por familia (dos cocheras, sean
+  // del tipo que sean).
+  complementos: {},
   _anticipoAutoAjustado: false,  // banner amarillo: el sistema subió el anticipo al mínimo
   nombreCliente: '',  // header de la minuta — se resetea al cambiar unidad
   celularCliente: '', // header de la minuta — se resetea al cambiar unidad
@@ -2370,7 +2386,12 @@ const PROYECTOS_DEFAULT = {
       m2semi:     { franquicia: 0, coef: 0.50, columna: 'm2 semicubiertos' },
       m2terraza:  { franquicia: 0, coef: 0.50, columna: 'm2 Terrazas' },
     },
-    tiposUnidad: ['Departamento', 'Local', 'Cochera', 'Baulera'],
+    // index_93: variantes de cochera de Torre H. 'Cochera Estandar' (12,5 m², USD 28.750) y
+    // 'Cochera XL' (17,85 m², USD 41.055) son TIPOS distintos — es lo que el vendedor elige
+    // y lo que el importer valida. Las dos caen en la familia 'Cochera' por prefijo, así que
+    // cuentan como stock de cocheras y se adjuntan como complemento sin declarar nada más.
+    // 'Cochera' a secas se mantiene por las unidades ya cargadas.
+    tiposUnidad: ['Departamento', 'Local', 'Cochera', 'Cochera Estandar', 'Cochera XL', 'Baulera'],
     params: {
       antMinPct: 20, integracionMinPct: 50, antDefaultPct: 20,   // PLACEHOLDER = Qiudad (V9 pendiente)
       // R3 en no-Edilia se EVALÚA (desde 2026-08-19; en index_83 definía la cuota de obra): si el
@@ -2404,7 +2425,15 @@ const PROYECTOS_DEFAULT = {
       // 26,5/2 = 84,35). Corregido 2026-08-19 (antes copiaba 'm2 Terrazas' de Sensum).
       m2desc:     { franquicia: 0, coef: 0.50, columna: 'm2 desc' },
     },
-    tiposUnidad: ['Departamento', 'Local', 'Cochera', 'Baulera'],
+    // index_94: variantes de baulera de Terrazas. Las tres arrancan con "Baulera ", así que
+    // caen en la familia Baulera por prefijo y no hace falta declarar `familias`.
+    //   Baulera en subsuelo   26 u · 1,10 m² · USD 2.150
+    //   Baulera chica en P15   6 u · 1,90 m² · USD 3.647
+    //   Baulera grande en P15  3 u · 4,20 m² · USD 8.190
+    // 'Cochera' (60 u · 12,50 m² · USD 28.188) ya estaba. 'Baulera' a secas se mantiene por
+    // las unidades que puedan estar cargadas con ese tipo.
+    tiposUnidad: ['Departamento', 'Local', 'Cochera', 'Baulera',
+                  'Baulera en subsuelo', 'Baulera chica en P15', 'Baulera grande en P15'],
     params: {
       antMinPct: 20, integracionMinPct: 50, antDefaultPct: 20,   // PLACEHOLDER = Qiudad (V9 pendiente)
       aportesMinPosesionPct: 20,  // 2026-08-19 (Fede): 20 % provisorio para testear — ver comentario en sensum
@@ -2842,8 +2871,86 @@ function tipoUnidad(u) {
 function categoriaUnidad(u) {
   if (!u) return 'Principal';
   if (u.categoria) return u.categoria;
-  const t = tipoUnidad(u);
-  return (t === 'Cochera' || t === 'Baulera') ? 'Complementaria' : 'Principal';
+  // index_93: por FAMILIA, para que 'Cochera XL' caiga en Complementaria igual que 'Cochera'.
+  return FAMILIAS_COMPLEMENTO.includes(familiaDeTipo(tipoUnidad(u))) ? 'Complementaria' : 'Principal';
+}
+
+// ── FAMILIA vs TIPO de complemento (index_93) ──────────────────────────────────
+// El TIPO es la etiqueta que ve el vendedor y que el importer valida contra la lista
+// cerrada del proyecto: 'Cochera', 'Cochera XL', 'Baulera Subsuelo'. La FAMILIA es lo que
+// agrupa a efectos del paquete: toda cochera es una cochera, del tamaño que sea. Sin esta
+// separación, agregar 'Cochera XL' a tiposUnidad la volvía invisible — inventarioDisponible,
+// seleccionarComplementos y armarPaquete comparaban contra el literal 'Cochera'.
+//
+// La familia se deriva del prefijo del tipo, así el Excel no necesita nada extra: basta con
+// que la variante se llame "Cochera <algo>". Un proyecto puede declararla explícitamente en
+// cfg.familias cuando el nombre no arranca con la familia (p. ej. {'Box doble': 'Cochera'}).
+// Un tipo complementario que no matchee ninguna familia es su propia familia: aparece como
+// un grupo más en la card, visible. Nunca se archiva en silencio en el grupo equivocado.
+const FAMILIAS_COMPLEMENTO = ['Cochera', 'Baulera'];
+function familiaDeTipo(tipo, cfg) {
+  const t = String(tipo || '').trim();
+  const decl = ((cfg || (typeof proyectoCfg === 'function' ? proyectoCfg() : null)) || {}).familias || {};
+  if (decl[t]) return decl[t];
+  const f = FAMILIAS_COMPLEMENTO.find(x =>
+    t.toLowerCase() === x.toLowerCase() || t.toLowerCase().startsWith(x.toLowerCase() + ' '));
+  return f || t;
+}
+function familiaUnidad(u, cfg) { return familiaDeTipo(tipoUnidad(u), cfg); }
+// Familias de complemento con stock disponible, en el orden canónico (cocheras antes que
+// bauleras; las familias ad-hoc del proyecto, después).
+function familiasConStock() {
+  const vistas = [];
+  unidades.forEach(u => {
+    if (!esComplemento(u) || u.estado !== 'disponible') return;
+    const f = familiaUnidad(u);
+    if (!vistas.includes(f)) vistas.push(f);
+  });
+  return vistas.sort((a, b) => {
+    const ia = FAMILIAS_COMPLEMENTO.indexOf(a), ib = FAMILIAS_COMPLEMENTO.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+}
+// Tipos concretos de una familia que hoy tienen stock, con su precio. Es lo que la card
+// ofrece como primer paso ("Cochera" / "Cochera XL") antes de la unidad puntual.
+function tiposDeFamilia(familia) {
+  const porTipo = new Map();
+  unidades.forEach(u => {
+    if (!esComplemento(u) || u.estado !== 'disponible') return;
+    if (familiaUnidad(u) !== familia) return;
+    const t = tipoUnidad(u);
+    if (!porTipo.has(t)) porTipo.set(t, []);
+    porTipo.get(t).push(u);
+  });
+  return [...porTipo.entries()].map(([tipo, us]) => {
+    const precios = us.map(x => x.precioReferencia || 0);
+    return { tipo, unidades: us, n: us.length, min: Math.min(...precios), max: Math.max(...precios) };
+  }).sort((a, b) => a.tipo.localeCompare(b.tipo));
+}
+// Unidades de un tipo que el vendedor puede elegir: las disponibles, más la que ya tenga
+// elegida (aunque se haya reservado mientras cotizaba — no se saca sin avisar).
+function unidadesElegiblesDeTipo(tipo, codigoActual) {
+  return unidades.filter(u => esComplemento(u) && tipoUnidad(u) === tipo &&
+    (u.estado === 'disponible' || u.codigo === codigoActual));
+}
+// Elección automática dentro de un tipo: LA MÁS BARATA disponible, no la primera del array.
+// Pedido original: "la primera disponible". Se cambió a la más barata porque "la primera" es
+// el orden de importación del Excel — exactamente la dependencia que este cambio elimina. Si
+// los precios de un tipo son iguales (que es lo esperable), las dos reglas dan lo mismo; si
+// difieren, con esta el cliente nunca queda sobrecotizado por un accidente de orden, y el
+// vendedor siempre puede subir eligiendo la unidad puntual.
+// Etiqueta de un componente del paquete en pantalla y en los documentos. Muestra el TIPO
+// real ('Cochera XL'), no la familia: es lo que distingue qué está comprando el cliente.
+// index_93: antes imprimía 'Cochera' a secas y una XL era indistinguible de una estándar.
+function labelComponentePaquete(u, conCodigo) {
+  if (!u) return '';
+  if (!esComplemento(u)) return u.codigo || 'Depto';
+  return conCodigo ? `${tipoUnidad(u)} (${u.codigo})` : tipoUnidad(u);
+}
+function complementoAutomatico(tipo) {
+  const disp = unidades.filter(u => esComplemento(u) && tipoUnidad(u) === tipo && u.estado === 'disponible');
+  if (disp.length === 0) return null;
+  return disp.reduce((a, b) => (b.precioReferencia || 0) < (a.precioReferencia || 0) ? b : a);
 }
 // Estampa tipo/categoria en la unidad si faltan (idempotente). Llamado desde migrarUnidad.
 function estamparTipoCategoria(u) {
@@ -3056,18 +3163,112 @@ function semaforo(descuento) {
 // Toma N primeras unidades disponibles de una clase complemento dada.
 // Auto-asignación silenciosa: el comercial pide "1 cochera", el sistema
 // elige una específica del inventario. El cliente no ve el código.
-function seleccionarComplementos(tipo, cantidad) {
-  if (cantidad <= 0) return [];
-  return unidades
-    .filter(u => esComplemento(u) && tipoUnidad(u) === tipo && u.estado === 'disponible')
-    .slice(0, cantidad);
+// index_94: resuelve ENTRADAS {tipo, codigo} a unidades concretas, SOLO para poder cotizar.
+// - Con `codigo` (el vendedor fijó una UF a propósito): esa unidad, sin filtrar por estado.
+//   Si se reserva mientras cotiza, sacarla cambiaría el precio en silencio; se mantiene y la
+//   card la marca (complementosNoDisponibles()).
+// - Sin `codigo` (el caso normal, "a asignar"): una unidad REPRESENTATIVA libre de ese tipo.
+//   Dentro de un tipo todas valen lo mismo, así que sirve para el precio; la UF definitiva
+//   la fija la aprobación. No se repite una unidad dentro del mismo paquete.
+// Tolera la forma de index_93 (array de strings) por si queda algún planState viejo en vuelo.
+function normalizarEntradaComplemento(e) {
+  if (!e) return null;
+  if (typeof e === 'string') return { tipo: null, codigo: e };
+  return { tipo: e.tipo || null, codigo: e.codigo || null };
+}
+function seleccionarComplementos(familia, entradas) {
+  if (!Array.isArray(entradas) || entradas.length === 0) return [];
+  const usados = [];
+  const res = [];
+  entradas.map(normalizarEntradaComplemento).filter(Boolean).forEach(e => {
+    let u = null;
+    if (e.codigo) {
+      u = unidades.find(x => x.codigo === e.codigo && esComplemento(x) && familiaUnidad(x) === familia);
+    } else if (e.tipo) {
+      u = unidades.find(x => esComplemento(x) && tipoUnidad(x) === e.tipo &&
+                             x.estado === 'disponible' && !usados.includes(x.codigo));
+    }
+    if (u) { usados.push(u.codigo); res.push(u); }
+  });
+  return res;
+}
+// ¿El vendedor fijó esta UF a propósito, o es la representativa de un tipo "a asignar"?
+// Los documentos del cliente solo nombran la UF cuando está fijada.
+function complementoFijado(codigo) {
+  const m = (planState && planState.complementos) || {};
+  return Object.keys(m).some(f => (m[f] || [])
+    .map(normalizarEntradaComplemento).filter(Boolean)
+    .some(e => e.codigo === codigo));
 }
 
-// Arma el paquete a partir de la unidad principal + planState.nCocheras + .nBauleras
+// Complementos de un paquete, tolerando la forma previa a index_93 (solo .cocheras y
+// .bauleras). Hay paquetes armados a mano — _paqueteSolo, los de los tests — y conviene
+// que sigan funcionando sin tener que tocarlos uno por uno.
+function complementosDePaquete(p) {
+  if (!p) return [];
+  if (Array.isArray(p.complementos)) return p.complementos;
+  return [...(p.cocheras || []), ...(p.bauleras || [])];
+}
+// Detalle {familia, tipo, codigo, unidad} de cada complemento. `codigo` null = a asignar.
+// Para paquetes armados a mano (tests, _paqueteSolo) se deriva de las unidades.
+function entradasDePaquete(p) {
+  if (!p) return [];
+  if (Array.isArray(p.complementosEntradas)) return p.complementosEntradas;
+  return complementosDePaquete(p).map(u => ({
+    familia: familiaUnidad(u), tipo: tipoUnidad(u), codigo: u.codigo, unidad: u,
+  }));
+}
+// Etiqueta de un complemento para documentos: el tipo, y la UF solo si está fijada.
+function labelEntradaComplemento(e, conDetalle) {
+  if (!e) return '';
+  if (e.codigo) return `${e.tipo} (${e.codigo})`;
+  return conDetalle ? `${e.tipo} · unidad a asignar` : e.tipo;
+}
+// Complementos del paquete que ya no están disponibles (los eligió el vendedor y mientras
+// tanto otro los reservó o vendió). La card los muestra marcados en vez de borrarlos.
+function complementosNoDisponibles(paquete) {
+  return complementosDePaquete(paquete).filter(u => u.estado !== 'disponible');
+}
+
+// Arma el paquete a partir de la unidad principal + planState.complementos.
+// `complementos` es la lista plana de todas las familias, en orden canónico (cocheras,
+// bauleras, después las familias ad-hoc del proyecto). `.cocheras` y `.bauleras` se
+// mantienen como vistas filtradas: hay código que las usa desde index_83.
 function armarPaquete(principal) {
-  const cocheras = seleccionarComplementos('Cochera', planState.nCocheras || 0);
-  const bauleras = seleccionarComplementos('Baulera', planState.nBauleras || 0);
-  return { principal, cocheras, bauleras, todas: [principal, ...cocheras, ...bauleras] };
+  const mapa = planState.complementos || {};
+  const fams = Object.keys(mapa).sort((a, b) => {
+    const ia = FAMILIAS_COMPLEMENTO.indexOf(a), ib = FAMILIAS_COMPLEMENTO.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  // index_94: además de las unidades (que es lo que necesita el motor), se devuelve el
+  // detalle con el tipo elegido y si la UF está fijada o queda "a asignar". Los documentos
+  // y la solicitud leen de acá; el motor sigue leyendo `complementos`/`todas` como siempre.
+  const complementos = [];
+  const complementosEntradas = [];
+  fams.forEach(fam => {
+    const entradas = (mapa[fam] || []).map(normalizarEntradaComplemento).filter(Boolean);
+    const unidadesFam = seleccionarComplementos(fam, entradas);
+    // seleccionarComplementos descarta las entradas que no resuelven (tipo agotado, UF
+    // borrada). Se re-emparejan por posición sobre las que sí resolvieron.
+    let i = 0;
+    entradas.forEach((e, idx) => {
+      const u = unidadesFam[i];
+      if (!u) return;
+      const resuelveEsta = e.codigo ? u.codigo === e.codigo : tipoUnidad(u) === e.tipo;
+      if (!resuelveEsta) return;
+      i++;
+      complementos.push(u);
+      // `idx` = posición de la entrada dentro de su familia en planState: es lo que la card
+      // usa para identificarla (el código puede ser null, así que no sirve como id).
+      complementosEntradas.push({ familia: fam, idx, tipo: e.tipo || tipoUnidad(u), codigo: e.codigo || null, unidad: u });
+    });
+  });
+  return {
+    principal, complementos, complementosEntradas,
+    cocheras: complementos.filter(u => familiaUnidad(u) === 'Cochera'),
+    bauleras: complementos.filter(u => familiaUnidad(u) === 'Baulera'),
+    todas: [principal, ...complementos],
+  };
 }
 
 // Prorratea un monto total por precioReferencia de cada unidad del paquete.
@@ -3089,13 +3290,20 @@ function anticoMinPaquete(paquete) {
   // exactamente, sin banner espurio de "anticipo ajustado al mínimo".
   const partes = [];
   partes.push({ label: 'Depto', monto: round500(paquete.principal.precioReferencia * PCT) });
-  paquete.cocheras.forEach((c, i) => {
-    const label = paquete.cocheras.length > 1 ? `Cochera ${i+1}` : 'Cochera';
-    partes.push({ label, monto: round500(c.precioReferencia * PCT) });
+  // index_93: etiqueta por TIPO real, numerada solo cuando hay dos del MISMO tipo
+  // ("Cochera 1 / Cochera 2"); una estándar y una XL se distinguen solas.
+  const comps = complementosDePaquete(paquete);
+  const porTipo = {};
+  comps.forEach(c => {
+    const t = tipoUnidad(c);
+    porTipo[t] = (porTipo[t] || 0) + 1;
   });
-  paquete.bauleras.forEach((b, i) => {
-    const label = paquete.bauleras.length > 1 ? `Baulera ${i+1}` : 'Baulera';
-    partes.push({ label, monto: round500(b.precioReferencia * PCT) });
+  const vistos = {};
+  comps.forEach(c => {
+    const t = tipoUnidad(c);
+    vistos[t] = (vistos[t] || 0) + 1;
+    const label = porTipo[t] > 1 ? `${t} ${vistos[t]}` : t;
+    partes.push({ label, monto: round500(c.precioReferencia * PCT) });
   });
   const total = partes.reduce((s, p) => s + p.monto, 0);
   return { total, desglose: partes };
@@ -3139,11 +3347,13 @@ function evaluarR3(plan, sumaRef) {
 }
 
 // Inventario disponible de cocheras / bauleras del proyecto activo.
-function inventarioDisponible(tipo) {
+// index_93: el parámetro es una FAMILIA ('Cochera'), no un tipo. Así una 'Cochera XL'
+// cuenta como stock de cocheras en vez de quedar invisible.
+function inventarioDisponible(familia) {
   // Multi-proyecto (index_82): `unidades` ya es el array del proyecto activo.
-  // B1 (index_83): complementarias del tipo pedido ('Cochera' | 'Baulera').
+  // B1 (index_83): complementarias de la familia pedida ('Cochera' | 'Baulera').
   return unidades.filter(u =>
-    esComplemento(u) && tipoUnidad(u) === tipo &&
+    esComplemento(u) && familiaUnidad(u) === familia &&
     u.estado === 'disponible'
   ).length;
 }
@@ -3826,7 +4036,7 @@ function generarMinuta() {
   }
   const u = unidadSeleccionada;
   const paquete = armarPaquete(u);
-  const hayPaquete = paquete.cocheras.length > 0 || paquete.bauleras.length > 0;
+  const hayPaquete = complementosDePaquete(paquete).length > 0;   // index_93: incluye familias ad-hoc
 
   const anticipo   = planState.anticipo !== null ? planState.anticipo : anticoDefaultPaquete(paquete);
   const refuerzos  = planState.refuerzos || [];
@@ -3887,11 +4097,7 @@ function generarMinuta() {
   // - Si NO hay paquete: solo una fila TOTAL por plan.
   // - Si hay paquete: fila TOTAL + sub-filas por UF (depto, cochera, baulera).
   // calcPlanPaquete expone subPlanes con {unidad, plan, anticipo, refuerzo} por componente.
-  const labelComponente = (uComp) => {
-    if (tipoUnidad(uComp) === 'Cochera') return `Cochera (${uComp.codigo})`;
-    if (tipoUnidad(uComp) === 'Baulera') return `Baulera (${uComp.codigo})`;
-    return uComp.codigo;  // depto principal: "UF 3-7"
-  };
+  const labelComponente = (uComp) => labelComponentePaquete(uComp, true);
 
   // filaPlan acepta un subHeaderTexto opcional. Si viene, el sub-header se incluye
   // DENTRO del mismo <tbody> del plan (no separado), para que CSS break-inside:avoid
@@ -3972,10 +4178,11 @@ function generarMinuta() {
   const { detalle: detalleSuperficie, total: m2total } = detalleSuperficieUnidad(u, proyectoCfg());
 
   // Complementos
-  const complementos = [];
-  if (paquete.cocheras.length > 0) complementos.push(`${paquete.cocheras.length} cochera${paquete.cocheras.length>1?'s':''}`);
-  if (paquete.bauleras.length > 0) complementos.push(`${paquete.bauleras.length} baulera${paquete.bauleras.length>1?'s':''}`);
-  const detalleComplementos = complementos.length > 0 ? complementos.join(' + ') : 'Sin complementos';
+  // index_93: cada uno por TIPO y UF, no "1 cochera". Antes el papel que firmaba el cliente
+  // no decía cuál cochera estaba comprando — con cocheras de distinto precio y tamaño eso
+  // es el dato que importa.
+  const complementos = entradasDePaquete(paquete).map(e => labelEntradaComplemento(e, true));
+  const detalleComplementos = complementos.length > 0 ? complementos.join(' · ') : 'Sin complementos';
   // index_92: en Unidades Terminadas la cochera va incluida en el precio y la descripción de
   // la unidad ya lo dice ("... + cochera"), así que imprimir "Complementos: Sin complementos"
   // se lee como si NO estuviera incluida. El proyecto lo declara con complementosSeparados:
@@ -4031,7 +4238,7 @@ function generarMinuta() {
             <div style="font-size:11px;color:#6b8268;margin-top:4px;">en ${params.nObraVigente} cuotas durante la obra</div>
             ${hayPaquete && Array.isArray(plan36data.subPlanes) && plan36data.subPlanes.length > 1 ? `
             <div style="margin-top:8px;font-size:11px;font-family:'DM Mono',monospace;color:var(--brand-dark);">${plan36data.subPlanes.map(sp => {
-              const nm = tipoUnidad(sp.unidad) === 'Cochera' ? 'Cochera' : tipoUnidad(sp.unidad) === 'Baulera' ? 'Baulera' : sp.unidad.codigo;
+              const nm = labelComponentePaquete(sp.unidad, false);   // index_93: el tipo real ('Cochera XL')
               return `<span style="color:#6b8268;font-family:'DM Sans',sans-serif;">${nm}</span> ${fmtUSD(sp.plan.totalUSD)}`;
             }).join('<span style="color:#b8b8ac;margin:0 5px;">+</span>')}</div>` : ''}
           </div>
@@ -4040,7 +4247,7 @@ function generarMinuta() {
             <div style="font-family:'DM Mono',monospace;font-size:18px;color:var(--brand-dark);">${fmtUSD(totalCashUSD)}</div>
             ${hayPaquete && Array.isArray(planCashData.subPlanes) && planCashData.subPlanes.length > 1 ? `
             <div style="margin-top:6px;font-size:10px;font-family:'DM Mono',monospace;color:var(--brand-dark);">${planCashData.subPlanes.map(sp => {
-              const nm = tipoUnidad(sp.unidad) === 'Cochera' ? 'Cochera' : tipoUnidad(sp.unidad) === 'Baulera' ? 'Baulera' : sp.unidad.codigo;
+              const nm = labelComponentePaquete(sp.unidad, false);   // index_93: el tipo real ('Cochera XL')
               return `<span style="color:#6b8268;font-family:'DM Sans',sans-serif;">${nm}</span> ${fmtUSD(sp.plan.totalUSD)}`;
             }).join('<span style="color:#b8b8ac;margin:0 4px;">+</span>')}</div>` : ''}
           </div>
@@ -4110,6 +4317,52 @@ function _solicitudProyecto(s) {
   return 'qiudad';
 }
 
+// Unidades que una solicitud compromete HOY: la principal, más los complementos que tengan
+// UF fijada. index_94: un complemento "a asignar" (codigo vacío) no compromete ninguna UF —
+// la toma recién al aprobarse. Eso es lo que evita las colisiones falsas entre vendedores
+// cuando hay 58 cocheras idénticas. Las solicitudes anteriores a index_93 no traen el campo
+// y devuelven solo la principal, que es exactamente lo que comprometían.
+function _complementosSolicitud(s) {
+  return ((s && s.documento && s.documento.complementos) || []).filter(Boolean);
+}
+function _codigosDeSolicitud(s) {
+  if (!s) return [];
+  const comps = _complementosSolicitud(s).map(c => c.codigo).filter(Boolean);
+  return [s.unidadCodigo, ...comps].filter(Boolean);
+}
+// Complementos de una solicitud, para los textos de confirmación y los avisos.
+function _etiquetasComplementosSolicitud(s) {
+  return _complementosSolicitud(s)
+    .map(c => c.codigo ? `${c.tipo || 'Complemento'} ${c.codigo}` : `${c.tipo || 'Complemento'} (a asignar)`);
+}
+
+// index_94: asigna una UF concreta a cada complemento "a asignar" de una solicitud, en el
+// momento de aprobarla. Toma unidades libres de ese tipo, salteando las que otra solicitud
+// pendiente haya fijado a propósito (si no, se le sacaría la UF a quien la pidió puntual).
+// No escribe nada: devuelve el plan para que el llamador decida.
+function _planAsignacionComplementos(s) {
+  const pid = _solicitudProyecto(s);
+  const arr = getUnidadesDeProyecto(pid);
+  // UF fijadas por OTRAS solicitudes pendientes: no se tocan.
+  const reservadasPorOtras = new Set(
+    (bandejaSolicitudes || [])
+      .filter(x => x.docId !== s.docId && x.estado === 'pendiente' && _solicitudProyecto(x) === pid)
+      .reduce((acc, x) => acc.concat(_complementosSolicitud(x).map(c => c.codigo).filter(Boolean)), [])
+  );
+  const tomadas = new Set(_complementosSolicitud(s).map(c => c.codigo).filter(Boolean));
+  const asignaciones = [];   // { i, tipo, codigo }
+  const sinStock = [];       // tipos que ya no tienen unidades libres
+  _complementosSolicitud(s).forEach((c, i) => {
+    if (c.codigo) return;                       // el vendedor la fijó: se respeta
+    const libre = arr.find(u => esComplemento(u) && tipoUnidad(u) === c.tipo &&
+      u.estado === 'disponible' && !tomadas.has(u.codigo) && !reservadasPorOtras.has(u.codigo));
+    if (!libre) { sinStock.push(c.tipo); return; }
+    tomadas.add(libre.codigo);
+    asignaciones.push({ i, tipo: c.tipo, codigo: libre.codigo });
+  });
+  return { asignaciones, sinStock };
+}
+
 async function cargarSolicitudesPendientes() {
   if (!window._db || !window._firestore || !window._firestore.collection) return;
   try {
@@ -4122,12 +4375,15 @@ async function cargarSolicitudesPendientes() {
     const m = new Map();
     snap.forEach(d => {
       const data = d.data();
-      const cod = data.unidadCodigo;
+      // index_93: cuenta la principal Y los complementos comprometidos. Antes solo la
+      // principal: una cochera con solicitud pendiente no mostraba badge en Unidades y el
+      // siguiente vendedor la volvía a adjuntar sin ningún aviso.
       // Clave compuesta proyecto|codigo: los códigos pueden repetirse entre proyectos
-      if (cod) {
-        const key = _solicitudProyecto(data) + '|' + cod;
+      const pid = _solicitudProyecto(data);
+      _codigosDeSolicitud(data).forEach(cod => {
+        const key = pid + '|' + cod;
         m.set(key, (m.get(key) || 0) + 1);
-      }
+      });
     });
     window.solicitudesPendientesPorUnidad = m;
   } catch (e) {
@@ -4155,11 +4411,24 @@ async function abrirModalSolicitarReserva(tipoPlan) {
   // Warning ANTES de abrir el modal: si la unidad ya tiene solicitudes pendientes,
   // mostrar modal de confirmación HTML (no confirm() nativo para evitar el "site says").
   const pendientes = window.solicitudesPendientesPorUnidad.get(proyectoActivo + '|' + u.codigo) || 0;
-  if (pendientes > 0) {
-    const plural = pendientes === 1 ? 'una solicitud' : `${pendientes} solicitudes`;
-    const sufijo = pendientes > 1 ? 's' : '';
+  // index_93: el aviso también mira los COMPLEMENTOS elegidos. El caso real es otro vendedor
+  // que ya pidió esa misma cochera para otro depto: la unidad principal está limpia y antes
+  // no aparecía ningún aviso.
+  const compsPendientes = complementosDePaquete(armarPaquete(u))
+    .map(c => ({ u: c, n: window.solicitudesPendientesPorUnidad.get(proyectoActivo + '|' + c.codigo) || 0 }))
+    .filter(x => x.n > 0);
+
+  if (pendientes > 0 || compsPendientes.length > 0) {
+    const partes = [];
+    if (pendientes > 0) {
+      partes.push(`la unidad ${u.codigo} tiene ${pendientes === 1 ? 'una solicitud' : pendientes + ' solicitudes'} pendiente${pendientes > 1 ? 's' : ''}`);
+    }
+    compsPendientes.forEach(x => {
+      partes.push(`${tipoUnidad(x.u)} ${x.u.codigo} tiene ${x.n === 1 ? 'una solicitud' : x.n + ' solicitudes'} pendiente${x.n > 1 ? 's' : ''}`);
+    });
+    const texto = partes.length === 1 ? partes[0] : partes.slice(0, -1).join(', ') + ' y ' + partes[partes.length - 1];
     document.getElementById('modal-warning-solicitudes-texto').textContent =
-      `Esta unidad ya tiene ${plural} de reserva pendiente${sufijo}. ¿Confirmás continuar con tu solicitud?`;
+      `Atención: ${texto}. ¿Confirmás continuar con tu solicitud?`;
     solicitudTipoPlanPendiente = tipoPlan;
     document.getElementById('modal-warning-solicitudes').classList.add('open');
     return;
@@ -4190,7 +4459,7 @@ function _continuarAperturaModalSolicitarReserva(tipoPlan) {
   // - Si NO hay paquete: llamar planFn(u, ...) con la unidad individual, no el objeto paquete.
   // El objeto paquete NO es una unidad — pasárselo directo da NaN porque u.oaFinal está undefined.
   const paquete = armarPaquete(u);
-  const hayPaquete = paquete.cocheras.length > 0 || paquete.bauleras.length > 0;
+  const hayPaquete = complementosDePaquete(paquete).length > 0;   // index_93: incluye familias ad-hoc
   const anticipo   = planState.anticipo !== null ? planState.anticipo : anticoDefaultPaquete(paquete);
   const refuerzos  = planState.refuerzos || [];
   const calc = (planFn) => hayPaquete
@@ -4235,6 +4504,12 @@ function _continuarAperturaModalSolicitarReserva(tipoPlan) {
   // Armar resumen visual
   const codigoU = u.codigo || '—';
   let resumen = `<strong>Solicitando reserva de:</strong> ${codigoU}<br>`;
+  // index_93: el vendedor confirma QUÉ complementos está comprometiendo, por UF, antes de
+  // mandar la solicitud. Con cocheras de distinto precio, "1 cochera" no alcanza.
+  const compsSol = entradasDePaquete(paquete);
+  if (compsSol.length > 0) {
+    resumen += `<strong>Complementos:</strong> ${compsSol.map(e => labelEntradaComplemento(e, true)).join(' · ')}<br>`;
+  }
   resumen += `<strong>Plan:</strong> ${labelPlan}`;
   if (tipoPlan !== 'cash') {
     resumen += ` · Anticipo ${fmtMon(plan.anticipo)} · Cuota ${fmtMon(plan.cuotaObra)} · ${cantCuotasPlan} cuotas`;
@@ -4415,6 +4690,19 @@ async function _persistirYImprimirSolicitud(datos) {
         leyendaRefuerzos: (planSnapshot.refuerzos || []).length > 0
           ? leyendaRefuerzosTexto(true)
           : null,
+        // index_93: QUÉ complementos concretos entraron en el precio. Congelado como el
+        // resto: el tipo y la descripción pueden cambiar en el inventario después de firmar.
+        // Con esto la solicitud queda trazable a UF — antes solo guardaba la principal.
+        // index_94: se congela el TIPO y el precio. `codigo` va vacío salvo que el
+        // vendedor haya fijado una UF: la unidad definitiva la asigna la aprobación y se
+        // escribe acá en ese momento.
+        complementos: entradasDePaquete(solicitudPlanActual.paquete).map(e => ({
+          codigo: e.codigo || '',
+          tipo: e.tipo,
+          descripcion: e.codigo ? (e.unidad.descripcion || '') : '',
+          precioReferencia: e.unidad.precioReferencia || 0,
+          precioCash: e.unidad.precioCash || 0,
+        })),
       };
     })(),
   };
@@ -4573,10 +4861,18 @@ function generarSolicitudReservaPDF(docData) {
       </div>
 
       <div class="minuta-seccion">
-        <div class="minuta-seccion-titulo">Unidad solicitada</div>
+        <div class="minuta-seccion-titulo">Unidad${(doc.complementos || []).length ? 'es' : ''} solicitada${(doc.complementos || []).length ? 's' : ''}</div>
         <div class="minuta-unidad">
           <div><strong>${docData.unidadCodigo || '—'}</strong>${docData.unidadDesc ? ' · ' + docData.unidadDesc : ''}</div>
           ${detalleSuperficie ? `<div style="font-size:9pt;color:#555;margin-top:3px;">${detalleSuperficie}${m2total > 0 ? ' · Total ' + fmt(m2total,2) + ' m²' : ''}</div>` : ''}
+          ${/* index_93: los complementos se nombran por TIPO y UF. Antes la solicitud solo
+                guardaba la unidad principal: el papel que firmaba el cliente no decía qué
+                cochera estaba comprando, y en la bandeja tampoco figuraba. Vienen del
+                snapshot congelado (doc.complementos), no del inventario vivo. */''}
+          ${(doc.complementos || []).map(c => `
+          <div style="margin-top:6px;padding-top:6px;border-top:1px dotted #ccc;">
+            <strong>${c.codigo}</strong> · ${c.tipo}${c.descripcion ? ' · ' + c.descripcion : ''}
+          </div>`).join('')}
         </div>
       </div>
 
@@ -4839,37 +5135,71 @@ async function _actualizarSolicitud(docId, cambios) {
 // Multi-proyecto (index_82): async y con proyecto explícito. La aprobación de una
 // solicitud opera sobre el proyecto DE LA SOLICITUD, nunca sobre el activo del admin
 // (códigos como "UF 1-2" pueden repetirse entre proyectos).
+// index_93: quedó como envoltorio de _marcarUnidades para no tener dos implementaciones que
+// se desincronicen. Se mantiene el nombre porque es la forma de un solo código.
 async function _marcarUnidad(codigoUnidad, nuevoEstado, proyectoId) {
+  return _marcarUnidades([codigoUnidad], nuevoEstado, proyectoId);
+}
+
+// index_93: marca VARIAS unidades de un mismo proyecto en una sola pasada — la principal y
+// los complementos de una solicitud. Valida TODO antes de tocar nada y persiste UNA vez: si
+// una cochera no aparece o está bloqueada, no queda el depto reservado y la cochera suelta.
+// index_93: chequeo PREVIO del marcado, sin tocar nada. Devuelve null si está todo bien, o
+// el mensaje del problema. Se expuso aparte porque aprobar/vender tienen que poder abortar
+// ANTES de escribir las solicitudes: si no, la solicitud quedaba 'aprobada' y las rivales
+// 'rechazada' aunque el cambio de estado de las unidades fallara después.
+async function _problemasDeMarcado(codigos, nuevoEstado, proyectoId) {
+  const lista = [...new Set((codigos || []).filter(Boolean))];
   const pid = proyectoIdValido(proyectoId) ? proyectoId : proyectoActivo;
-  // Asegurar que las unidades del proyecto objetivo estén en memoria
   let arr = getUnidadesDeProyecto(pid);
   if (arr.length === 0 && window._cargarUnidadesProyecto) {
     try { await window._cargarUnidadesProyecto(pid); } catch (e) {}
     arr = getUnidadesDeProyecto(pid);
   }
-  const u = arr.find(x => x.codigo === codigoUnidad);
-  if (!u) {
-    console.warn('Unidad no encontrada para actualizar estado:', pid, codigoUnidad);
-    alert('No se encontró la unidad ' + codigoUnidad + ' en el proyecto ' + nombreProyecto(pid) + '.');
-    return false;
+  const faltantes = [], bloqueadas = [];
+  lista.forEach(cod => {
+    const u = arr.find(x => x.codigo === cod);
+    if (!u) { faltantes.push(cod); return; }
+    // B3: una unidad bloqueada no se reserva ni se vende desde la bandeja.
+    if (u.estado === 'bloqueada' && nuevoEstado !== 'disponible') bloqueadas.push(cod);
+  });
+  if (faltantes.length > 0) {
+    console.warn('Unidades no encontradas para actualizar estado:', pid, faltantes);
+    return 'No se ' + (faltantes.length > 1 ? 'encontraron las unidades' : 'encontró la unidad') + ' ' +
+           faltantes.join(', ') + ' en el proyecto ' + nombreProyecto(pid) + '.\n\nNo se cambió nada.';
   }
-  // B3: una unidad bloqueada no se reserva ni se vende desde la bandeja — desbloquear primero.
-  if (u.estado === 'bloqueada' && nuevoEstado !== 'disponible') {
-    alert('La unidad ' + codigoUnidad + ' está bloqueada. Devolvela a disponible desde Unidades antes de aprobar.');
-    return false;
+  if (bloqueadas.length > 0) {
+    const varias = bloqueadas.length > 1;
+    return (varias ? 'Las unidades ' : 'La unidad ') + bloqueadas.join(', ') +
+           (varias ? ' están bloqueadas' : ' está bloqueada') + '. ' +
+           (varias ? 'Devolvelas' : 'Devolvela') + ' a disponible desde Unidades antes de aprobar.\n\nNo se cambió nada.';
   }
-  u.estado = nuevoEstado;
+  return null;
+}
+
+async function _marcarUnidades(codigos, nuevoEstado, proyectoId) {
+  const lista = [...new Set((codigos || []).filter(Boolean))];
+  if (lista.length === 0) return false;
+  const pid = proyectoIdValido(proyectoId) ? proyectoId : proyectoActivo;
+  const problema = await _problemasDeMarcado(lista, nuevoEstado, pid);
+  if (problema) { alert(problema); return false; }
+  const arr = getUnidadesDeProyecto(pid);
+  const objetivos = lista.map(cod => arr.find(x => x.codigo === cod)).filter(Boolean);
+  // 2. Aplicar
+  const previos = objetivos.map(u => u.estado);
+  objetivos.forEach(u => { u.estado = nuevoEstado; });
+  // 3. Persistir una sola vez
   try {
     if (pid === proyectoActivo) {
       guardarEstado();
     } else if (window._guardarUnidadesProyecto) {
-      // Proyecto no activo: persistir SOLO su doc de unidades (config no cambió)
       await window._guardarUnidadesProyecto(pid);
     }
     return true;
   } catch (e) {
-    console.error('Error guardando estado de unidad:', e);
-    alert('Error al guardar el cambio de estado de la unidad: ' + (e.message || e));
+    objetivos.forEach((u, i) => { u.estado = previos[i]; });   // revertir en memoria
+    console.error('Error guardando estado de unidades:', e);
+    alert('Error al guardar el cambio de estado: ' + (e.message || e) + '\n\nNo se cambió ningún estado.');
     return false;
   }
 }
@@ -4891,28 +5221,66 @@ function accionVerSolicitud(docId) {
 async function accionAprobarSolicitud(docId) {
   const s = bandejaSolicitudes.find(x => x.docId === docId);
   if (!s) return;
-  const ok = confirm(
+  // index_93: los complementos entran en el texto de confirmación y en el cambio de estado.
+  const compsS = _etiquetasComplementosSolicitud(s);
+
+  // index_94: asignar UF a los complementos "a asignar" ANTES de escribir nada.
+  const plan = _planAsignacionComplementos(s);
+  if (plan.sinStock.length > 0) {
+    alert('No quedan unidades disponibles de: ' + [...new Set(plan.sinStock)].join(', ') +
+          '.\n\nNo se aprobó nada. Cargá más stock o sacá el complemento de la solicitud.');
+    return;
+  }
+  const compsFinal = _complementosSolicitud(s).map((c, i) => {
+    const a = plan.asignaciones.find(x => x.i === i);
+    return a ? Object.assign({}, c, { codigo: a.codigo }) : c;
+  });
+  const codigosFinal = [s.unidadCodigo, ...compsFinal.map(c => c.codigo).filter(Boolean)].filter(Boolean);
+
+  // index_94: el confirm va DESPUÉS de resolver la asignación, así nombra la UF concreta
+  // que se va a comprometer en vez de un genérico "incluye una cochera".
+  const detalleComps = compsFinal.map(c => {
+    const recien = plan.asignaciones.some(a => a.codigo === c.codigo);
+    return `${c.tipo} ${c.codigo}${recien ? ' (se asigna ahora)' : ''}`;
+  });
+  if (!confirm(
     `Aprobar la solicitud de ${s.cliente.nombre} ${s.cliente.apellido} para ${s.unidadCodigo}?\n\n` +
-    `La unidad pasará a estado "reservada".\n` +
-    `Las otras solicitudes pendientes sobre esta unidad (si las hay) se auto-rechazarán.`
-  );
-  if (!ok) return;
+    (detalleComps.length ? `Incluye: ${detalleComps.join(' · ')}\n\n` : '') +
+    `${detalleComps.length ? 'Todas esas unidades pasarán' : 'La unidad pasará'} a estado "reservada".\n` +
+    `Las otras solicitudes pendientes sobre ${detalleComps.length ? 'cualquiera de ellas' : 'esta unidad'} (si las hay) se auto-rechazarán.`
+  )) return;
+
+  // index_93: chequear las unidades ANTES de escribir nada. Si alguna está bloqueada o no
+  // aparece, la solicitud NO se aprueba y las rivales NO se auto-rechazan: antes quedaban
+  // todas resueltas en la bandeja con el inventario intacto, o sea la unidad figuraba
+  // reservada para un cliente y disponible en Unidades al mismo tiempo.
+  const problema = await _problemasDeMarcado(codigosFinal, 'reservada', _solicitudProyecto(s));
+  if (problema) { alert(problema); return; }
 
   // 1. Actualizar la solicitud aprobada
   try {
     await _actualizarSolicitud(docId, {
       estado: 'aprobada',
       fechaResolucion: window._firestore.serverTimestamp(),
+      // index_94: las UF asignadas quedan escritas en la solicitud. Desde acá el documento
+      // es trazable a unidades concretas; antes de aprobar solo decía el tipo.
+      documento: Object.assign({}, s.documento || {}, { complementos: compsFinal }),
     });
+    s.documento = Object.assign({}, s.documento || {}, { complementos: compsFinal });
   } catch (e) {
     alert('Error al aprobar: ' + (e.message || e));
     return;
   }
 
   // 2. Auto-rechazar otras solicitudes pendientes sobre la misma unidad
+  // index_93: se auto-rechaza toda solicitud pendiente que comprometa ALGUNA de las mismas
+  // unidades — no solo la misma principal. Dos clientes con deptos distintos pueden haber
+  // pedido la misma cochera; aprobada una, la otra ya no es satisfacible.
+  const codigosS = new Set(_codigosDeSolicitud(s));
   const otras = bandejaSolicitudes.filter(x =>
-    x.docId !== docId && x.unidadCodigo === s.unidadCodigo && x.estado === 'pendiente' &&
-    _solicitudProyecto(x) === _solicitudProyecto(s)   // mismo proyecto: los códigos se repiten entre proyectos
+    x.docId !== docId && x.estado === 'pendiente' &&
+    _solicitudProyecto(x) === _solicitudProyecto(s) &&   // mismo proyecto: los códigos se repiten entre proyectos
+    _codigosDeSolicitud(x).some(c => codigosS.has(c))
   );
   for (const o of otras) {
     try {
@@ -4928,7 +5296,7 @@ async function accionAprobarSolicitud(docId) {
   }
 
   // 3. Marcar unidad como reservada
-  if (await _marcarUnidad(s.unidadCodigo, 'reservada', _solicitudProyecto(s))) {
+  if (await _marcarUnidades(codigosFinal, 'reservada', _solicitudProyecto(s))) {
     await cargarSolicitudesPendientes(); // refrescar Map para que badge en Unidades quede limpio
     if (typeof renderListaUnidades === 'function') renderListaUnidades();
     if (typeof renderUnidadesGrid === 'function') renderUnidadesGrid();
@@ -4938,25 +5306,58 @@ async function accionAprobarSolicitud(docId) {
 async function accionMarcarVendidaSolicitud(docId) {
   const s = bandejaSolicitudes.find(x => x.docId === docId);
   if (!s) return;
-  const ok = confirm(
+
+  // index_94: asignar UF a los complementos "a asignar" ANTES de escribir nada.
+  const plan = _planAsignacionComplementos(s);
+  if (plan.sinStock.length > 0) {
+    alert('No quedan unidades disponibles de: ' + [...new Set(plan.sinStock)].join(', ') +
+          '.\n\nNo se aprobó nada. Cargá más stock o sacá el complemento de la solicitud.');
+    return;
+  }
+  const compsFinal = _complementosSolicitud(s).map((c, i) => {
+    const a = plan.asignaciones.find(x => x.i === i);
+    return a ? Object.assign({}, c, { codigo: a.codigo }) : c;
+  });
+  const codigosFinal = [s.unidadCodigo, ...compsFinal.map(c => c.codigo).filter(Boolean)].filter(Boolean);
+
+  // index_94: igual que al aprobar — primero se resuelve la asignación, después se pregunta.
+  const detalleComps = compsFinal.map(c => {
+    const recien = plan.asignaciones.some(a => a.codigo === c.codigo);
+    return `${c.tipo} ${c.codigo}${recien ? ' (se asigna ahora)' : ''}`;
+  });
+  if (!confirm(
     `Marcar como VENDIDA la unidad ${s.unidadCodigo} con la solicitud de ${s.cliente.nombre} ${s.cliente.apellido}?\n\n` +
-    `Esto es definitivo: la unidad pasa a "Vendida" y las otras solicitudes pendientes se auto-rechazan.`
-  );
-  if (!ok) return;
+    (detalleComps.length ? `Incluye: ${detalleComps.join(' · ')}\n\n` : '') +
+    `Esto es definitivo: ${detalleComps.length ? 'todas esas unidades pasan' : 'la unidad pasa'} a "Vendida" y las otras solicitudes pendientes se auto-rechazan.`
+  )) return;
+
+  // index_93: chequear las unidades ANTES de escribir nada. Si alguna está bloqueada o no
+  // aparece, la solicitud NO se aprueba y las rivales NO se auto-rechazan: antes quedaban
+  // todas resueltas en la bandeja con el inventario intacto, o sea la unidad figuraba
+  // reservada para un cliente y disponible en Unidades al mismo tiempo.
+  const problema = await _problemasDeMarcado(codigosFinal, 'Vendida', _solicitudProyecto(s));
+  if (problema) { alert(problema); return; }
 
   try {
     await _actualizarSolicitud(docId, {
       estado: 'aprobada',
       fechaResolucion: window._firestore.serverTimestamp(),
+      documento: Object.assign({}, s.documento || {}, { complementos: compsFinal }),   // index_94
     });
+    s.documento = Object.assign({}, s.documento || {}, { complementos: compsFinal });
   } catch (e) {
     alert('Error: ' + (e.message || e));
     return;
   }
 
+  // index_93: se auto-rechaza toda solicitud pendiente que comprometa ALGUNA de las mismas
+  // unidades — no solo la misma principal. Dos clientes con deptos distintos pueden haber
+  // pedido la misma cochera; aprobada una, la otra ya no es satisfacible.
+  const codigosS = new Set(_codigosDeSolicitud(s));
   const otras = bandejaSolicitudes.filter(x =>
-    x.docId !== docId && x.unidadCodigo === s.unidadCodigo && x.estado === 'pendiente' &&
-    _solicitudProyecto(x) === _solicitudProyecto(s)   // mismo proyecto: los códigos se repiten entre proyectos
+    x.docId !== docId && x.estado === 'pendiente' &&
+    _solicitudProyecto(x) === _solicitudProyecto(s) &&   // mismo proyecto: los códigos se repiten entre proyectos
+    _codigosDeSolicitud(x).some(c => codigosS.has(c))
   );
   for (const o of otras) {
     try {
@@ -4970,24 +5371,71 @@ async function accionMarcarVendidaSolicitud(docId) {
     }
   }
 
-  if (await _marcarUnidad(s.unidadCodigo, 'Vendida', _solicitudProyecto(s))) {
+  if (await _marcarUnidades(codigosFinal, 'Vendida', _solicitudProyecto(s))) {
     await cargarSolicitudesPendientes();
     if (typeof renderListaUnidades === 'function') renderListaUnidades();
     if (typeof renderUnidadesGrid === 'function') renderUnidadesGrid();
   }
 }
 
+// index_93: qué unidades de una solicitud se pueden devolver a disponible al rechazarla.
+// Tres reglas, y las tres importan:
+//   1. Solo si la solicitud estaba APROBADA. Una pendiente nunca marcó nada; y las que se
+//      auto-rechazan al aprobar otra se rechazan estando pendientes, así que liberar ahí
+//      devolvería a disponible unidades que acaba de reservar la solicitud ganadora.
+//   2. Solo las que están en 'reservada'. Una 'Vendida' no se deshace desde acá, y una
+//      'bloqueada' la puso el admin por otro motivo.
+//   3. Nunca una unidad que OTRA solicitud aprobada también reclama.
+function _unidadesLiberablesDeSolicitud(s) {
+  const vacio = { liberables: [], vendidas: [], ajenas: [] };
+  if (!s || s.estado !== 'aprobada') return vacio;
+  const pid = _solicitudProyecto(s);
+  const arr = getUnidadesDeProyecto(pid);
+  const reclamadasPorOtras = new Set(
+    (bandejaSolicitudes || [])
+      .filter(x => x.docId !== s.docId && x.estado === 'aprobada' && _solicitudProyecto(x) === pid)
+      .reduce((acc, x) => acc.concat(_codigosDeSolicitud(x)), [])
+  );
+  const r = { liberables: [], vendidas: [], ajenas: [] };
+  _codigosDeSolicitud(s).forEach(cod => {
+    const u = arr.find(x => x.codigo === cod);
+    if (!u) return;
+    if (reclamadasPorOtras.has(cod)) { r.ajenas.push(cod); return; }
+    if (u.estado === 'Vendida')      { r.vendidas.push(cod); return; }
+    if (u.estado === 'reservada')      r.liberables.push(cod);
+  });
+  return r;
+}
+
 async function accionRechazarSolicitud(docId) {
   const s = bandejaSolicitudes.find(x => x.docId === docId);
   if (!s) return;
-  const ok = confirm(`Rechazar la solicitud de ${s.cliente.nombre} ${s.cliente.apellido} para ${s.unidadCodigo}?`);
-  if (!ok) return;
+  // index_93: si la solicitud estaba aprobada, rechazarla devuelve a disponible lo que esa
+  // aprobación había reservado — la principal y sus complementos. Antes la unidad quedaba
+  // reservada para siempre y había que liberarla a mano desde Unidades.
+  const lib = _unidadesLiberablesDeSolicitud(s);
+  const pid = _solicitudProyecto(s);
+  let texto = `Rechazar la solicitud de ${s.cliente.nombre} ${s.cliente.apellido} para ${s.unidadCodigo}?`;
+  if (lib.liberables.length > 0) {
+    texto += `\n\nVuelve${lib.liberables.length > 1 ? 'n' : ''} a "disponible": ${lib.liberables.join(', ')}.`;
+  }
+  if (lib.vendidas.length > 0) {
+    texto += `\n\n${lib.vendidas.join(', ')} figura${lib.vendidas.length > 1 ? 'n' : ''} como VENDIDA${lib.vendidas.length > 1 ? 'S' : ''}: ` +
+             `no se libera${lib.vendidas.length > 1 ? 'n' : ''} desde acá. Cambialo desde Unidades si corresponde.`;
+  }
+  if (lib.ajenas.length > 0) {
+    texto += `\n\n${lib.ajenas.join(', ')} también pertenece${lib.ajenas.length > 1 ? 'n' : ''} a otra solicitud aprobada: ` +
+             `queda${lib.ajenas.length > 1 ? 'n' : ''} como está${lib.ajenas.length > 1 ? 'n' : ''}.`;
+  }
+  if (!confirm(texto)) return;
   try {
     await _actualizarSolicitud(docId, {
       estado: 'rechazada',
       fechaResolucion: window._firestore.serverTimestamp(),
     });
-    // No tocamos la unidad — la unidad sigue como estaba (disponible).
+    // Liberar DESPUÉS de que la solicitud quedó rechazada: si el update falla, no queda una
+    // unidad disponible con la solicitud todavía aprobada.
+    if (lib.liberables.length > 0) await _marcarUnidades(lib.liberables, 'disponible', pid);
     await cargarSolicitudesPendientes();
     if (typeof renderListaUnidades === 'function') renderListaUnidades();
     if (typeof renderUnidadesGrid === 'function') renderUnidadesGrid();
@@ -4999,13 +5447,20 @@ async function accionRechazarSolicitud(docId) {
 async function accionDevolverPendienteSolicitud(docId) {
   const s = bandejaSolicitudes.find(x => x.docId === docId);
   if (!s) return;
-  // Si la unidad ya fue reservada/vendida por esta misma solicitud, advertir.
-  const u = getUnidadesDeProyecto(_solicitudProyecto(s)).find(x => x.codigo === s.unidadCodigo);
-  if (u && (u.estado === 'reservada' || u.estado === 'Vendida' || u.estado === 'bloqueada') && s.estado === 'aprobada') {
+  // Si las unidades ya fueron reservadas/vendidas por esta misma solicitud, advertir.
+  // index_93: se nombran TODAS (principal + complementos), no solo la principal. Devolver a
+  // pendiente sigue sin tocar estados — a diferencia de rechazar, que sí libera. Si en algún
+  // momento conviene unificarlo, es acá.
+  const arrDev = getUnidadesDeProyecto(_solicitudProyecto(s));
+  const tomadas = _codigosDeSolicitud(s)
+    .map(c => arrDev.find(x => x.codigo === c))
+    .filter(x => x && (x.estado === 'reservada' || x.estado === 'Vendida' || x.estado === 'bloqueada'));
+  if (tomadas.length > 0 && s.estado === 'aprobada') {
     const ok = confirm(
-      `La unidad ${s.unidadCodigo} está en estado "${u.estado}" por esta aprobación.\n\n` +
-      `Devolver la solicitud a pendiente NO cambia automáticamente el estado de la unidad — ` +
-      `tendrás que pasarla a "disponible" manualmente desde Unidades si querés rehabilitar la cotización.\n\n` +
+      `${tomadas.length > 1 ? 'Estas unidades están' : 'La unidad ' + tomadas[0].codigo + ' está'} en estado ` +
+      `${tomadas.map(x => x.codigo + ' → "' + x.estado + '"').join(', ')} por esta aprobación.\n\n` +
+      `Devolver la solicitud a pendiente NO cambia automáticamente el estado de las unidades — ` +
+      `tendrás que pasarlas a "disponible" manualmente desde Unidades, o rechazar la solicitud (eso sí las libera).\n\n` +
       `¿Continuar?`
     );
     if (!ok) return;
@@ -5031,6 +5486,94 @@ async function accionDevolverPendienteSolicitud(docId) {
 // ═══════════════════════════════════════════════════════════════════
 // RENDER COTIZADOR
 // ═══════════════════════════════════════════════════════════════════
+// ── Card de complementos (index_93) ───────────────────────────────────────────
+// Reemplaza los botones 0/1/2. Dos pasos: chips por TIPO disponible dentro de cada familia
+// (un click adjunta una unidad concreta, la más barata libre de ese tipo) y, por cada
+// complemento ya elegido, un selector para cambiarlo por otra unidad del mismo tipo.
+// Se dibuja una columna por familia con stock, así una familia ad-hoc del proyecto aparece
+// sola, sin tocar nada.
+function renderCardComplementos(paquete) {
+  // index_94: solo las UF FIJADAS pueden quedar no disponibles; las "a asignar" resuelven
+  // siempre contra stock libre.
+  const noDisp = entradasDePaquete(paquete)
+    .filter(e => e.codigo && e.unidad.estado !== 'disponible').map(e => e.unidad);
+  const entradas = entradasDePaquete(paquete);
+  const columnas = familiasConStock().map(familia => {
+    const elegidas = entradas.filter(e => e.familia === familia ||
+      (!e.familia && familiaUnidad(e.unidad) === familia));
+    const sinCupo  = elegidas.length >= MAX_COMPLEMENTOS;
+    const tipos    = tiposDeFamilia(familia);
+    const plural   = familia === 'Cochera' ? 'Cocheras' : familia === 'Baulera' ? 'Bauleras' : familia + 's';
+    const totalFam = elegidas.reduce((s, e) => s + (e.unidad.precioReferencia || 0), 0);
+
+    const chips = tipos.map(t => {
+      const libres = libresDeTipoParaPaquete(t.tipo);
+      const dis = sinCupo || libres === 0;
+      const precio = t.min === t.max ? fmtUSD(t.min) : `${fmtUSD(t.min)}–${fmtUSD(t.max)}`;
+      return `<button class="opt-btn" onclick="agregarComplementoPorTipo('${familia}','${t.tipo.replace(/'/g, "\\'")}')"
+        ${dis ? 'disabled' : ''} title="${dis ? (sinCupo ? 'Máximo ' + MAX_COMPLEMENTOS : 'Sin stock libre') : 'Agregar ' + t.tipo}"
+        style="padding:6px 10px;text-align:left;line-height:1.25;">
+        <span style="font-weight:600;">+ ${t.tipo}</span>
+        <span style="display:block;font-size:10px;font-weight:400;color:var(--gray-500);">${libres} libre${libres === 1 ? '' : 's'} · ${precio}</span>
+      </button>`;
+    }).join('');
+
+    // index_94: por default la UF queda "a asignar" y se fija al aprobar la reserva. El
+    // selector es un override para cuando el cliente quiere una unidad puntual.
+    const filas = elegidas.map((e) => {
+      const i = typeof e.idx === 'number' ? e.idx : elegidas.indexOf(e);
+      const opciones = unidadesElegiblesDeTipo(e.tipo, e.codigo).map(x =>
+        `<option value="${x.codigo}" ${x.codigo === e.codigo ? 'selected' : ''}>${x.codigo} · ${fmtUSD(x.precioReferencia)}${x.estado !== 'disponible' ? ' · ' + x.estado : ''}</option>`
+      ).join('');
+      const alerta = (e.codigo && e.unidad.estado !== 'disponible')
+        ? `<span style="color:#991b1b;font-size:10px;white-space:nowrap;" title="Se reservó o vendió mientras cotizabas. No se saca sola para no cambiarte el precio sin avisar.">⚠ ${e.unidad.estado}</span>` : '';
+      return `<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+        <span style="font-size:12px;min-width:92px;">${e.tipo}</span>
+        <select onchange="fijarComplementoEspecifico('${familia}',${i},this.value)"
+          class="mono" style="flex:1;min-width:0;font-size:11px;padding:3px 6px;"
+          title="Por default la unidad se asigna al aprobar la reserva. Elegí una UF solo si el cliente quiere esa en particular.">
+          <option value="" ${!e.codigo ? 'selected' : ''}>unidad a asignar</option>
+          ${opciones}
+        </select>
+        ${alerta}
+        <button class="btn btn-secondary btn-sm" onclick="quitarComplemento('${familia}',${i})"
+          style="padding:2px 8px;font-size:11px;" title="Quitar">✕</button>
+      </div>`;
+    }).join('');
+
+    return `<div style="margin:0;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;">
+        <label style="margin:0;white-space:nowrap;">${plural}</label>
+        <span style="font-size:10px;color:var(--gray-500);">
+          ${inventarioDisponible(familia)} disp.${elegidas.length ? ` · ${elegidas.length} elegida${elegidas.length > 1 ? 's' : ''} · ${fmtUSD(totalFam)}` : ''}
+        </span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${chips}
+        ${elegidas.length ? `<button class="opt-btn" onclick="limpiarComplementos('${familia}')" style="padding:6px 10px;">Ninguna</button>` : ''}
+      </div>
+      ${filas}
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="card" style="margin-bottom:16px;padding:14px 18px;">
+      <div class="card-title" style="margin-bottom:10px;">Complementos</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;">
+        ${columnas}
+      </div>
+      ${noDisp.length > 0 ? `
+      <div style="margin-top:10px;font-size:11px;color:#991b1b;">
+        ${noDisp.map(c => `${tipoUnidad(c)} ${c.codigo}`).join(', ')}: ya no ${noDisp.length > 1 ? 'están disponibles' : 'está disponible'}.
+        Sigue${noDisp.length > 1 ? 'n' : ''} en la cotización hasta que ${noDisp.length > 1 ? 'los' : 'lo'} saques o ${noDisp.length > 1 ? 'los' : 'lo'} cambies.
+      </div>` : ''}
+      ${complementosDePaquete(paquete).length > 0 ? `
+      <div style="margin-top:10px;font-size:11px;color:var(--gray-500);">
+        Anticipo y refuerzos se prorratean entre las unidades del paquete por precio de referencia.
+      </div>` : ''}
+    </div>`;
+}
+
 function renderCotizador(u) {
   const main = document.getElementById('main-cotizador');
   if (!main) return;
@@ -5044,7 +5587,7 @@ function renderCotizador(u) {
   }
   // Armar paquete (depto + cocheras + bauleras según planState)
   const paquete = armarPaquete(u);
-  const hayPaquete = paquete.cocheras.length > 0 || paquete.bauleras.length > 0;
+  const hayPaquete = complementosDePaquete(paquete).length > 0;   // index_93: incluye familias ad-hoc
 
   // index_92: un proyecto puede quedar con un solo plan habilitado — hoy Unidades Terminadas,
   // solo contado. Estas banderas apagan la UI que deja de tener sentido. Son GENERALES, no un
@@ -5068,7 +5611,7 @@ function renderCotizador(u) {
   const integracionBinding = anticoMin > anticoMinBase + 0.5; // ¿manda la integración?
   const anticoDefault = anticoDefaultPaquete(paquete);
   // Leer del state (no del DOM). NO se auto-rellenan refuerzos acá: lista vacía queda vacía.
-  // El prepoblado del plan vive en seleccionarUnidad / setComplemento / resetearPlanDefault.
+  // El prepoblado del plan vive en seleccionarUnidad / la card de complementos / resetearPlanDefault.
   const refuerzos = planState.refuerzos || [];
   const anticipo  = planState.anticipo !== null ? planState.anticipo : Math.max(anticoDefault, anticoMin);
   // Persistir en planState (idempotente)
@@ -5176,42 +5719,7 @@ function renderCotizador(u) {
          cochera está incluida en el precio y no existe como unidad, así que el
          selector no tendría qué adjuntar: sería decorativo hoy y cobraría dos veces
          el día que alguien importe cocheras sueltas al proyecto. -->
-    ${hayComplementos ? `
-    <div class="card" style="margin-bottom:16px;padding:14px 18px;">
-      <div class="card-title" style="margin-bottom:10px;">Complementos</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
-        <div style="margin:0;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <label style="margin:0;white-space:nowrap;min-width:62px;">Cocheras</label>
-            <div style="display:flex;gap:5px;flex:1;">
-              <button class="opt-btn ${(planState.nCocheras||0)===0?'active':''}" onclick="setComplemento('nCocheras', 0)" style="flex:1;padding:5px;">0</button>
-              <button class="opt-btn ${(planState.nCocheras||0)===1?'active':''}" onclick="setComplemento('nCocheras', 1)" style="flex:1;padding:5px;" ${inventarioDisponible('Cochera')<1?'disabled':''}>1</button>
-              <button class="opt-btn ${(planState.nCocheras||0)===2?'active':''}" onclick="setComplemento('nCocheras', 2)" style="flex:1;padding:5px;" ${inventarioDisponible('Cochera')<2?'disabled':''}>2</button>
-            </div>
-          </div>
-          <div style="font-size:10px;color:var(--gray-500);margin-top:3px;">
-            ${inventarioDisponible('Cochera')} disp. · USD ${(() => { const c = unidades.find(u => esComplemento(u) && tipoUnidad(u)==='Cochera' && u.estado==='disponible'); return c ? fmt(c.precioReferencia) : '—'; })()}
-          </div>
-        </div>
-        <div style="margin:0;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <label style="margin:0;white-space:nowrap;min-width:62px;">Bauleras</label>
-            <div style="display:flex;gap:5px;flex:1;">
-              <button class="opt-btn ${(planState.nBauleras||0)===0?'active':''}" onclick="setComplemento('nBauleras', 0)" style="flex:1;padding:5px;">0</button>
-              <button class="opt-btn ${(planState.nBauleras||0)===1?'active':''}" onclick="setComplemento('nBauleras', 1)" style="flex:1;padding:5px;" ${inventarioDisponible('Baulera')<1?'disabled':''}>1</button>
-              <button class="opt-btn ${(planState.nBauleras||0)===2?'active':''}" onclick="setComplemento('nBauleras', 2)" style="flex:1;padding:5px;" ${inventarioDisponible('Baulera')<2?'disabled':''}>2</button>
-            </div>
-          </div>
-          <div style="font-size:10px;color:var(--gray-500);margin-top:3px;">
-            ${inventarioDisponible('Baulera')} disp. · USD ${(() => { const b = unidades.find(u => esComplemento(u) && tipoUnidad(u)==='Baulera' && u.estado==='disponible'); return b ? fmt(b.precioReferencia) : '—'; })()}
-          </div>
-        </div>
-      </div>
-      ${(planState.nCocheras > 0 || planState.nBauleras > 0) ? `
-      <div style="margin-top:10px;font-size:11px;color:var(--gray-500);">
-        Anticipo y refuerzos se prorratean entre las unidades del paquete por precio de referencia.
-      </div>` : ''}
-    </div>` : ''}
+    ${hayComplementos ? renderCardComplementos(paquete) : ''}
 
     <!-- 2. PANEL DE ENTRADA UNIFICADO.
          index_92: con un solo plan de contado no hay anticipo, refuerzos ni plazo
@@ -5312,9 +5820,9 @@ function renderCotizador(u) {
         </div>
       </div>
       ${(() => {
-        const comps = [];
-        if (paquete.cocheras.length > 0) comps.push(`${paquete.cocheras.length} cochera${paquete.cocheras.length>1?'s':''}`);
-        if (paquete.bauleras.length > 0) comps.push(`${paquete.bauleras.length} baulera${paquete.bauleras.length>1?'s':''}`);
+        // index_93: el titular nombra el tipo de cada complemento ("+ Cochera XL"), no la
+        // cantidad. El código va en el desglose de abajo, no acá, para no cargar el título.
+        const comps = entradasDePaquete(paquete).map(e => labelEntradaComplemento(e, false));
         const labelPrecio = `Precio unidad ${u.codigo}${comps.length ? ' + ' + comps.join(' + ') : ''}`;
         const esVendedor = window.currentUserRole !== 'admin';
         // index_92: con solo contado habilitado, el precio de referencia no corresponde a
@@ -5342,7 +5850,7 @@ function renderCotizador(u) {
           <div style="font-size:12px;color:var(--gray-500);margin-top:6px;">en ${params.nObraVigente} cuotas durante la obra</div>
           ${hayPaquete && Array.isArray(p36.subPlanes) && p36.subPlanes.length > 1 ? `
           <div style="margin-top:10px;font-size:12px;font-family:'DM Mono',monospace;color:var(--brand-dark);">${p36.subPlanes.map(sp => {
-            const nm = tipoUnidad(sp.unidad) === 'Cochera' ? 'Cochera' : tipoUnidad(sp.unidad) === 'Baulera' ? 'Baulera' : sp.unidad.codigo;
+            const nm = labelComponentePaquete(sp.unidad, false);   // index_93: el tipo real ('Cochera XL')
             return `<span style="color:var(--gray-500);font-family:'DM Sans',sans-serif;">${nm}</span> ${fmtUSD(sp.plan.totalUSD)}`;
           }).join('<span style="color:var(--gray-300);margin:0 6px;">+</span>')}</div>` : ''}
         </div>
@@ -5351,7 +5859,7 @@ function renderCotizador(u) {
           <div style="font-family:'DM Mono',monospace;font-size:22px;color:var(--brand-dark);">${fmtUSD(cash.totalUSD)}</div>
           ${hayPaquete && Array.isArray(cash.subPlanes) && cash.subPlanes.length > 1 ? `
           <div style="margin-top:8px;font-size:11px;font-family:'DM Mono',monospace;color:var(--brand-dark);">${cash.subPlanes.map(sp => {
-            const nm = tipoUnidad(sp.unidad) === 'Cochera' ? 'Cochera' : tipoUnidad(sp.unidad) === 'Baulera' ? 'Baulera' : sp.unidad.codigo;
+            const nm = labelComponentePaquete(sp.unidad, false);   // index_93: el tipo real ('Cochera XL')
             return `<span style="color:var(--gray-500);font-family:'DM Sans',sans-serif;">${nm}</span> ${fmtUSD(sp.plan.totalUSD)}`;
           }).join('<span style="color:var(--gray-300);margin:0 5px;">+</span>')}</div>` : ''}
           ${esVendedor ? `<button onclick="abrirModalSolicitarReserva('cash')" class="btn btn-secondary btn-sm" style="margin-top:10px;font-size:11px;padding:4px 10px;">Solicitar</button>` : ''}
@@ -5587,15 +6095,13 @@ function renderFilaComparativa(plan, u, esEdilia) {
 
   const subFilas = plan.subPlanes.map(sp => {
     const u_ = sp.unidad;
-    const tipoAux = tipoUnidad(u_);
-    let label;
-    if (tipoAux === 'Cochera') {
-      label = esAdmin ? `Cochera <span style="color:var(--gray-400);font-size:11px;font-style:italic;">(${u_.codigo})</span>` : 'Cochera';
-    } else if (tipoAux === 'Baulera') {
-      label = esAdmin ? `Baulera <span style="color:var(--gray-400);font-size:11px;font-style:italic;">(${u_.codigo})</span>` : 'Baulera';
-    } else {
-      label = u_.codigo || 'Depto';
-    }
+    // index_93: el tipo real ('Cochera XL'), no la familia. El código lo ve solo el admin,
+    // como venía siendo; en la comparativa del vendedor alcanza con el tipo.
+    // index_94: el código solo se muestra si el vendedor fijó esa UF; si es "a asignar",
+    // la unidad que ve el motor es una representativa y mostrarla induciría a error.
+    const label = esComplemento(u_)
+      ? ((esAdmin && complementoFijado(u_.codigo)) ? `${tipoUnidad(u_)} <span style="color:var(--gray-400);font-size:11px;font-style:italic;">(${u_.codigo})</span>` : tipoUnidad(u_))
+      : (u_.codigo || 'Depto');
     const subPlanData = { ...sp.plan, anticipo: sp.anticipo, refuerzos: sp.refuerzos };
     return filaHTML(subPlanData, label, 'sub', false);
   }).join('');
@@ -5808,7 +6314,7 @@ function seleccionarUnidad(idx) {
   // Reset plan state for new unit. Refuerzos se prepoblан con el plan default (Gustavo):
   // 20% anticipo + refuerzos de params.refuerzosDefault. El paquete arranca sin complementos.
   const paq = armarPaquete(unidadSeleccionada);
-  planState = { anticipo: null, refuerzos: construirRefuerzosDefault(paq), nCocheras: 0, nBauleras: 0, _anticipoAutoAjustado: false, nombreCliente: '', celularCliente: '' };
+  planState = { anticipo: null, refuerzos: construirRefuerzosDefault(paq), complementos: {}, _anticipoAutoAjustado: false, nombreCliente: '', celularCliente: '' };
   inversoPlanes = [];
   renderListaUnidades();
   renderCotizador(unidadSeleccionada);
@@ -5847,13 +6353,73 @@ function aplicarAnticipoMinimo() {
 // Cambiar el paquete = plan nuevo: se repone el plan inicial (anticipo + refuerzos default)
 // sobre el paquete nuevo. Cualquier ajuste manual previo se descarta (quedó obsoleto al
 // cambiar el paquete). Misma lógica que el botón "Volver a opción inicial".
-function setComplemento(campo, cantidad) {
-  planState[campo] = Math.max(0, Math.min(2, cantidad | 0));
+// ── Acciones de la card de complementos (index_94) ────────────────────────────
+// El vendedor elige un TIPO ('Cochera XL'). La entrada queda como {tipo, codigo:null} —
+// "a asignar"— y la UF la fija la aprobación de la reserva. Fijar una UF puntual es un
+// override opcional (cuando el cliente quiere ESA cochera), no el camino normal.
+function entradasDeFamilia(familia) {
+  const m = planState.complementos || (planState.complementos = {});
+  if (!Array.isArray(m[familia])) m[familia] = [];
+  // Normalizar EN EL LUGAR. Reasignar m[familia] a un array nuevo dejaba huérfana la
+  // referencia que ya tenía quien llamó antes: agregarComplementoPorTipo tomaba la lista,
+  // después llamaba a libresDeTipoParaPaquete (que re-normaliza todas las familias) y su
+  // push terminaba en un array descartado — el complemento no se agregaba nunca.
+  const lista = m[familia];
+  for (let i = 0; i < lista.length; i++) {
+    const n = normalizarEntradaComplemento(lista[i]);
+    if (n) lista[i] = n;
+    else { lista.splice(i, 1); i--; }
+  }
+  return lista;
+}
+// Cuántas unidades libres de un tipo quedan después de descontar lo ya elegido en ESTE
+// paquete (las "a asignar" también consumen stock del tipo).
+function libresDeTipoParaPaquete(tipo) {
+  const enPaquete = Object.keys(planState.complementos || {})
+    .reduce((n, f) => n + entradasDeFamilia(f).filter(e => (e.tipo || '') === tipo).length, 0);
+  return Math.max(0, unidades.filter(u => esComplemento(u) && tipoUnidad(u) === tipo &&
+    u.estado === 'disponible').length - enPaquete);
+}
+function agregarComplementoPorTipo(familia, tipo) {
+  const lista = entradasDeFamilia(familia);
+  if (lista.length >= MAX_COMPLEMENTOS) return;
+  if (libresDeTipoParaPaquete(tipo) <= 0) return;
+  lista.push({ tipo, codigo: null });
+  reponerPlanInicial();
+}
+// `ref` identifica la entrada: su índice dentro de la familia (no el código, que puede ser null).
+function quitarComplemento(familia, idx) {
+  const lista = entradasDeFamilia(familia);
+  const i = Number(idx);
+  if (!(i >= 0 && i < lista.length)) return;
+  lista.splice(i, 1);
+  reponerPlanInicial();
+}
+// Override opcional: fijar una UF puntual, o volver a "a asignar" con valor vacío.
+function fijarComplementoEspecifico(familia, idx, codigoNuevo) {
+  const lista = entradasDeFamilia(familia);
+  const i = Number(idx);
+  if (!(i >= 0 && i < lista.length)) { renderCotizador(unidadSeleccionada); return; }
+  const cod = codigoNuevo || null;
+  // No permitir fijar dos veces la misma UF dentro del paquete.
+  if (cod && lista.some((e, j) => j !== i && e.codigo === cod)) { renderCotizador(unidadSeleccionada); return; }
+  // La UF tiene que ser del MISMO tipo que la entrada: si no, la etiqueta diría un tipo
+  // ("Cochera") y el precio vendría de otro ("Cochera XL"). El select de la card solo ofrece
+  // unidades del tipo, pero la función se valida igual.
+  if (cod) {
+    const u = unidades.find(x => x.codigo === cod && esComplemento(x));
+    if (!u || tipoUnidad(u) !== lista[i].tipo) { renderCotizador(unidadSeleccionada); return; }
+  }
+  lista[i] = { tipo: lista[i].tipo, codigo: cod };
+  reponerPlanInicial();
+}
+function limpiarComplementos(familia) {
+  (planState.complementos || {})[familia] = [];
   reponerPlanInicial();
 }
 
 // Repone el plan inicial (anticipo default + refuerzos de Gustavo) sobre el PAQUETE ACTUAL
-// (con los complementos marcados). Apaga el flag de auto-ajuste. Usado por setComplemento
+// (con los complementos marcados). Apaga el flag de auto-ajuste. Usado por la card de complementos
 // y por el botón "Volver a opción inicial".
 function reponerPlanInicial() {
   if (!unidadSeleccionada) return;
@@ -6738,7 +7304,7 @@ function cambiarProyecto(id, _forzar) {
   try { localStorage.setItem(PROYECTO_STORAGE_KEY, id); } catch(e) {}
   // Estado de UI que no debe heredarse entre proyectos
   unidadSeleccionada = null;
-  planState = { anticipo: null, refuerzos: [], nCocheras: 0, nBauleras: 0,
+  planState = { anticipo: null, refuerzos: [], complementos: {},
                 _anticipoAutoAjustado: false, nombreCliente: '', celularCliente: '' };
   filtrosUnidades = { tipologias: [], vistas: [], pisos: [], estado: defaultEstadoUnidades() };
   const filtroEstadoEl = document.getElementById('filtro-estado');
@@ -6990,8 +7556,9 @@ function mostrarPreviewImport(warnings) {
   const bloqueadas  = importData.filter(u => u.estado === 'bloqueada').length;
   const principales = importData.filter(u => categoriaUnidad(u) === 'Principal').length;
   const compl       = importData.filter(u => categoriaUnidad(u) === 'Complementaria');
-  const nCoch = compl.filter(u => tipoUnidad(u) === 'Cochera').length;
-  const nBaul = compl.filter(u => tipoUnidad(u) === 'Baulera').length;
+  // index_93: por familia, para que las variantes ('Cochera XL') entren en el conteo.
+  const nCoch = compl.filter(u => familiaUnidad(u) === 'Cochera').length;
+  const nBaul = compl.filter(u => familiaUnidad(u) === 'Baulera').length;
   document.getElementById('import-summary').innerHTML = `
     <div style="background:var(--brand-pale);border:1px solid var(--brand-light);border-radius:var(--radius-sm);padding:12px 16px;">
       <strong>${importData.length} unidades</strong> encontradas ·
@@ -9064,9 +9631,22 @@ document.addEventListener('DOMContentLoaded', () => {
       const fd = getUnidadesFiltradas();
       if (fd.length !== 1 || fd[0].codigo !== 'B-1') errores.push('filtro estado=disponible no debe incluir bloqueada');
     } finally { unidades = back.u; filtrosUnidades = back.f; window.currentUserRole = back.r; }
-    // (3): gate en _marcarUnidad
-    const sm = src(_marcarUnidad);
-    if (!/bloqueada/.test(sm) || !/nuevoEstado !== 'disponible'/.test(sm)) errores.push('_marcarUnidad no rechaza operar sobre bloqueada');
+    // (3): gate en el marcado. index_93: el gate vive en _problemasDeMarcado, el chequeo
+    // previo que comparten _marcarUnidades y las acciones de la bandeja. Se verifica el
+    // gate ahí y que toda la cadena pase por él: aprobar y marcar vendida tienen que
+    // consultarlo ANTES de escribir las solicitudes, y _marcarUnidad delegar en el batch.
+    const sm = src(_problemasDeMarcado);
+    if (!/bloqueada/.test(sm) || !/nuevoEstado !== 'disponible'/.test(sm)) errores.push('_problemasDeMarcado no rechaza operar sobre bloqueada');
+    if (!/_problemasDeMarcado\(/.test(src(_marcarUnidades))) errores.push('_marcarUnidades no consulta el chequeo previo');
+    if (!/_marcarUnidades\(/.test(src(_marcarUnidad))) errores.push('_marcarUnidad no delega en _marcarUnidades');
+    [['accionAprobarSolicitud', accionAprobarSolicitud], ['accionMarcarVendidaSolicitud', accionMarcarVendidaSolicitud]]
+      .forEach(([nom, fn]) => {
+        const sf = src(fn);
+        const iChk = sf.indexOf('_problemasDeMarcado(');
+        const iEsc = sf.indexOf('_actualizarSolicitud(');
+        if (iChk < 0) errores.push(nom + ' no chequea las unidades antes de escribir');
+        else if (iEsc >= 0 && iChk > iEsc) errores.push(nom + ' chequea DESPUÉS de escribir la solicitud');
+      });
     // (5): importer, render, acción
     if (!/'bloqueada'|'bloqueado'/.test(src(procesarArchivoImport))) errores.push('importer no normaliza Bloqueado/a');
     if (!/bloqueada/.test(src(renderUnidadesGrid))) errores.push('renderUnidadesGrid sin estilo/label para bloqueada');
@@ -9503,6 +10083,93 @@ document.addEventListener('DOMContentLoaded', () => {
       ['cash', '36c', '60c', '120c'].forEach(k => { if (!keysQ.includes(k)) errores.push('qiudad perdió ' + k); });
       if (keysQ.includes('ext')) errores.push('qiudad no debería traer el extendido');
     } finally {
+      cambiarProyecto(proyPrev, true);
+    }
+    return errores.length === 0 ? true : errores.join(' | ');
+  });
+
+  test('T2', 1, 'Complementos: familia vs tipo; la solicitud congela el TIPO y no compromete UF hasta aprobarse; la asignación respeta las UF fijadas por otros (index_94)', () => {
+    const errores = [];
+    const proyPrev = proyectoActivo, unidPrev = unidades, planPrev = planState, bandPrev = bandejaSolicitudes;
+    try {
+      cambiarProyecto('sensum', true);
+      const mk = (o) => calcUnidad(Object.assign({ proyecto: 'sensum', m2subsuelo: 0, m2cub: 0,
+        m2semi: 0, m2terraza: 0, estado: 'disponible', categoria: 'Complementaria' }, o));
+      const depto = mk({ codigo: 'T2-DEPTO', tipo: 'Departamento', categoria: 'Principal',
+        m2cub: 50, m2hom: 50, precioReferencia: 100000, precioCash: 90000 });
+      const c1 = mk({ codigo: 'T2-C1', tipo: 'Cochera Estandar', m2subsuelo: 12.5, m2hom: 12.5,
+        precioReferencia: 28750, precioCash: 27312 });
+      const c2 = mk({ codigo: 'T2-C2', tipo: 'Cochera Estandar', m2subsuelo: 12.5, m2hom: 12.5,
+        precioReferencia: 28750, precioCash: 27312 });
+      const xl = mk({ codigo: 'T2-XL', tipo: 'Cochera XL', m2subsuelo: 17.85, m2hom: 17.85,
+        precioReferencia: 41055, precioCash: 39002 });
+      unidades = [depto, c1, c2, xl]; window.unidades = unidades;
+      cargarUnidadesEnMemoria('sensum', unidades);
+      unidades = getUnidadesDeProyecto('sensum'); window.unidades = unidades;
+
+      // ── Familia vs tipo ──
+      if (familiaUnidad(xl) !== 'Cochera') errores.push('Cochera XL no cae en la familia Cochera');
+      if (!esComplemento(xl)) errores.push('Cochera XL no es complementaria');
+      if (inventarioDisponible('Cochera') !== 3) errores.push('inventario de cocheras = ' + inventarioDisponible('Cochera'));
+      if (tiposDeFamilia('Cochera').length !== 2) errores.push('la familia debería ofrecer 2 tipos');
+
+      // ── Elegir por TIPO deja la UF a asignar ──
+      planState = { anticipo: null, refuerzos: [], complementos: {}, _anticipoAutoAjustado: false,
+                    nombreCliente: '', celularCliente: '' };
+      agregarComplementoPorTipo('Cochera', 'Cochera Estandar');
+      agregarComplementoPorTipo('Cochera', 'Cochera XL');
+      const ent = entradasDeFamilia('Cochera');
+      if (ent.length !== 2) errores.push('no entraron las dos entradas');
+      if (ent.some(e => e.codigo)) errores.push('la entrada no debería fijar UF: ' + JSON.stringify(ent));
+
+      // ── El paquete cotiza con una representativa libre del tipo ──
+      const paq = armarPaquete(depto);
+      if (paq.cocheras.length !== 2) errores.push('el paquete no tomó las dos cocheras');
+      const suma = paq.todas.reduce((s, x) => s + x.precioReferencia, 0);
+      if (suma !== 100000 + 28750 + 41055) errores.push('la suma no respeta el precio del tipo: ' + suma);
+      if (paq.cocheras[0].codigo === paq.cocheras[1].codigo) errores.push('repitió la misma unidad en el paquete');
+      const labels = anticoMinPaquete(paq).desglose.map(d => d.label);
+      if (labels.indexOf('Cochera Estandar') < 0 || labels.indexOf('Cochera XL') < 0) {
+        errores.push('el desglose no nombra los tipos reales: ' + labels.join('+'));
+      }
+      const det = entradasDePaquete(paq);
+      if (det.some(e => e.codigo)) errores.push('el detalle no debería traer UF fijada');
+      if (labelEntradaComplemento(det[0], true).indexOf('a asignar') < 0) errores.push('la etiqueta no dice "a asignar"');
+
+      // ── Una solicitud por TIPO no compromete ninguna UF ──
+      const solTipo = { docId: 'T2a', unidadCodigo: 'T2-DEPTO', proyecto: 'sensum', estado: 'pendiente',
+        documento: { complementos: [{ codigo: '', tipo: 'Cochera Estandar' }] } };
+      const codsTipo = _codigosDeSolicitud(solTipo);
+      if (codsTipo.join(',') !== 'T2-DEPTO') errores.push('una solicitud por tipo no debería comprometer UF: ' + codsTipo.join(','));
+
+      // ── Pero una con UF fijada sí ──
+      const solFija = { docId: 'T2b', unidadCodigo: 'T2-OTRO', proyecto: 'sensum', estado: 'pendiente',
+        documento: { complementos: [{ codigo: 'T2-C1', tipo: 'Cochera Estandar' }] } };
+      if (_codigosDeSolicitud(solFija).join(',') !== 'T2-OTRO,T2-C1') errores.push('la UF fijada debería comprometerse');
+
+      // ── La asignación saltea la UF que otra pendiente fijó ──
+      bandejaSolicitudes = [solTipo, solFija]; window.bandejaSolicitudes = bandejaSolicitudes;
+      const planAsig = _planAsignacionComplementos(solTipo);
+      if (planAsig.sinStock.length) errores.push('debería haber stock: ' + planAsig.sinStock.join(','));
+      if (planAsig.asignaciones.length !== 1) errores.push('debería asignar una sola');
+      else if (planAsig.asignaciones[0].codigo !== 'T2-C2') {
+        errores.push('asignó ' + planAsig.asignaciones[0].codigo + ' en vez de saltear la fijada por otra solicitud');
+      }
+
+      // ── Sin stock libre del tipo, la asignación lo reporta ──
+      // Se muta la unidad que está EN MEMORIA (cargarUnidadesEnMemoria puede haber clonado).
+      const c2mem = unidades.find(x => x.codigo === 'T2-C2');
+      c2mem.estado = 'reservada';
+      const planSin = _planAsignacionComplementos(solTipo);
+      if (planSin.sinStock.join(',') !== 'Cochera Estandar') errores.push('no reporta la falta de stock: ' + JSON.stringify(planSin));
+      c2mem.estado = 'disponible';
+
+      // ── Una solicitud legacy devuelve solo la principal ──
+      if (_codigosDeSolicitud({ unidadCodigo: 'VIEJA' }).join(',') !== 'VIEJA') errores.push('solicitud legacy mal interpretada');
+    } finally {
+      unidades = unidPrev; window.unidades = unidades;
+      planState = planPrev;
+      bandejaSolicitudes = bandPrev; window.bandejaSolicitudes = bandejaSolicitudes;
       cambiarProyecto(proyPrev, true);
     }
     return errores.length === 0 ? true : errores.join(' | ');
