@@ -3086,11 +3086,32 @@ function round500(x) { return Math.round((x || 0) / 500) * 500; }
 // posteriores a la posesión como refuerzo; serían cuotas). Esos se descartan acá.
 // El motor solo necesita el TOTAL aportado antes de la posesión (tasa cliente = 0%,
 // no hay descuento intra-obra): los meses individuales son de presentación, no de cálculo.
+// Mes EFECTIVO de un refuerzo (2026-10-29). El refuerzo marcado `esPosesion` está atado al
+// hito, no a una fecha: su mes se resuelve contra el nObraVigente del MOMENTO DEL CÁLCULO, no
+// contra el que había cuando se armó el plan.
+//
+// Esto no es cosmético. Con el mes congelado al construir, cambiar el plazo de obra con una
+// cotización abierta dejaba el refuerzo de posesión en el mes viejo: con obra 36 → 14, el del
+// hito quedaba en el 36 y el plan salía SIN refuerzo en la posesión y CON uno en tenencia que
+// nadie pidió. Pasó en el deploy del 2026-10-29 y se vio en la minuta impresa. El mes sigue
+// siendo un número en todo el pipeline y en el snapshot se congela ya resuelto; lo único que se
+// resuelve tarde es el de la fila marcada.
+function mesEfectivoRefuerzo(r) {
+  return (r && r.esPosesion) ? (params.nObraVigente || 0) : (r ? r.mes : null);
+}
+// Devuelve la lista con los meses ya resueltos, conservando la marca para la presentación.
+function resolverRefuerzos(arr) {
+  return (Array.isArray(arr) ? arr : []).map(r => {
+    if (!r || !r.esPosesion) return r;
+    return Object.assign({}, r, { mes: mesEfectivoRefuerzo(r) });
+  });
+}
+
 function normRefuerzos(refuerzos, q) {
   const nObra = params.nObraVigente || 0;
   let arr;
   if (Array.isArray(refuerzos)) {
-    arr = refuerzos;
+    arr = resolverRefuerzos(refuerzos);
   } else {
     const ref = refuerzos || 0;
     const nRef = capRefuerzos(q, nObra);
@@ -3142,8 +3163,10 @@ function construirRefuerzosDefault(paquete) {
 // calcPlan36/60/120/180/240 no pueden ver un refuerzo post ni por accidente.
 function partirRefuerzos(refuerzos, q, nTotal) {
   const nObra = params.nObraVigente || 0;
-  const obra = normRefuerzos(refuerzos, q);          // mes ≤ nObra, monto > 0
-  const post = (Array.isArray(refuerzos) ? refuerzos : [])
+  const obra = normRefuerzos(refuerzos, q);          // mes ≤ nObra, monto > 0 (ya resueltos)
+  // El lado post se parte sobre la lista RESUELTA, igual que el lado obra: si no, un refuerzo
+  // de posesión con el mes viejo congelado caería acá y aparecería como refuerzo en tenencia.
+  const post = resolverRefuerzos(Array.isArray(refuerzos) ? refuerzos : [])
     .filter(r => r && r.monto != null && r.monto > 0 && r.mes != null
                  && r.mes > nObra && r.mes <= nTotal);
   return { obra, post };
@@ -3859,7 +3882,9 @@ function calcPlanPaquete(paquete, anticipoTotal, refuerzosTotal, qOrPlanFn, mayb
   // antes de repartirlo entre las unidades. El filtro correcto es el de cada motor: los planes
   // Edilia vuelven a llamar a normRefuerzos puertas adentro y los siguen ignorando, y el
   // extendido los parte con partirRefuerzos. Acá solo se descarta lo inválido.
-  const soloValidos = (arr) => (Array.isArray(arr) ? arr : [])
+  // Se resuelve el mes del refuerzo de posesión acá también: el nivel paquete empareja por mes
+  // contra lo que devolvió el subplan, y el subplan ya trabaja con los meses resueltos.
+  const soloValidos = (arr) => resolverRefuerzos(arr)
     .filter(r => r && r.monto != null && r.monto > 0 && r.mes != null);
   if (typeof qOrPlanFn === 'function') {            // forma nueva: (..., refuerzosArray, planFn)
     refuerzosArr = Array.isArray(refuerzosTotal) ? soloValidos(refuerzosTotal) : normRefuerzos(refuerzosTotal, 0);
@@ -11170,6 +11195,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // escalar q capeado por nObra
     const cap = normRefuerzos(5000, 99);
     if (cap.length !== Math.floor(nObra / 12)) errs.push('cap: ' + cap.length + ' != ' + Math.floor(nObra / 12));
+    // ── El refuerzo marcado `esPosesion` resuelve su mes CONTRA EL nObra VIGENTE ──
+    // (2026-10-29). Con el mes congelado al construir el plan, bajar el plazo de obra con una
+    // cotización abierta dejaba ese refuerzo en el mes viejo: desaparecía de la posesión y
+    // reaparecía como un refuerzo en tenencia que nadie pidió. Salió impreso en una minuta.
+    {
+      const bk = params.nObraVigente;
+      try {
+        params.nObraVigente = 36;
+        const viejo = [{ monto: 1000, mes: 12 }, { monto: 2000, mes: 36, esPosesion: true }];
+        params.nObraVigente = 14;                       // el admin baja la obra después
+        const r = normRefuerzos(viejo);
+        const pos = r.find(x => x.esPosesion);
+        if (!pos) errs.push('el refuerzo de posesión se perdió al bajar nObra');
+        else if (pos.mes !== 14) errs.push('posesión no resolvió al nObra vigente: mes ' + pos.mes);
+        if (r.length !== 2) errs.push('resolución: ' + JSON.stringify(r));
+        // y el mes original NO se muta: la lista de planState queda intacta
+        if (viejo[1].mes !== 36) errs.push('resolverRefuerzos mutó el refuerzo original');
+        // sin la marca, el mes viejo se descarta como siempre
+        if (normRefuerzos([{ monto: 2000, mes: 36 }]).length !== 0) errs.push('sin marca, mes>nObra debe descartarse');
+      } finally { params.nObraVigente = bk; }
+    }
     return errs.length === 0 ? true : errs.join(' | ');
   });
 
