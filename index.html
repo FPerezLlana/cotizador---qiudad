@@ -4129,12 +4129,11 @@ function cuadroMarchaHTML(plan, opts) {
   // El motor queda exacto: esto es capa de presentación. La diferencia que queda entre el capital
   // que suma el cuadro y el precio del titular es el residuo del redondeo —unos pocos dólares,
   // ~0,02 %— y va declarada en la nota al pie en vez de repartirse como deriva dentro de la tabla.
-  const ent = (v) => Math.round(v || 0);
-  const f = (v) => fmtUSD(v);          // recibe siempre enteros; el redondeo ya se hizo arriba
+  const f = (v) => fmtUSD(v);          // redondea al imprimir; los acumuladores van exactos
   const nObra = plan.nObra || 0;
   const refs = Array.isArray(plan.refuerzos) ? plan.refuerzos : [];
-  const refEnMes = (m) => refs.filter(r => r.mes === m).reduce((a, r) => a + ent(r.monto), 0);
-  const cuotaVista = ent(plan.cuotaObra);   // la misma en los nTotal meses, obra y tenencia
+  const refEnMes = (m) => refs.filter(r => r.mes === m).reduce((a, r) => a + (r.monto || 0), 0);
+  const cuotaObra = plan.cuotaObra || 0;    // la misma en los nTotal meses, obra y tenencia
   const filas = [];
   // Amortización = capital que cancela CADA pago, incluido el anticipo y los refuerzos
   // (2026-10-29). Antes la columna solo se llenaba en las cuotas de tenencia y quedaba vacía en
@@ -4143,27 +4142,22 @@ function cuadroMarchaHTML(plan, opts) {
   // verificación que la minuta perdió al sacarle los porcentajes.
   // Identidad por fila y en los totales: Pago del mes = Amortización + Interés.
   //
-  // Y el total de amortización tiene que dar EXACTO contra el precio (2026-10-29): es el número
-  // que el cliente va a contrastar, y si no coincide la tabla no sirve para lo que se hizo.
-  // El residuo del redondeo —nTotal × la fracción de la cuota, hasta medio dólar por cuota— se
-  // absorbe en la ÚLTIMA cuota de tenencia. Así la columna sigue sumando lo impreso Y el total
-  // coincide al dólar; lo que queda cubierto por la nota al pie es la diferencia de esa última
-  // cuota contra las demás, que es la única que no es el número repetido.
-  // El precio sale de la propia identidad del plan (ant + Σrefuerzos + cuotaObra × nTotal), así
-  // que no hace falta que el cuadro conozca la unidad: funciona igual reconstruido del snapshot.
+  // Los acumuladores guardan el valor EXACTO mes a mes y se redondean solo al imprimir
+  // (decisión de Fede, 2026-10-29). Así el total de amortización da el precio al dólar sin
+  // tener que deformar ninguna cuota: ningún mes aparece con un monto distinto a los demás.
+  // Lo que se resigna es que la suma de las celdas impresas puede quedar unos dólares del
+  // acumulado final —el redondeo de cada celda, acotado a medio dólar, repetido nTotal veces—,
+  // y eso es lo que cubre la nota al pie. La alternativa (absorber el residuo en la última
+  // cuota) hacía cerrar la suma pero dejaba una cuota hasta 30 USD más alta que las otras 59.
   let acum = 0, sumRef = 0, sumI = 0, sumA = 0;
-  const refTotalExacto = refs.reduce((a, r) => a + (r.monto || 0), 0);
-  const refTotalImpreso = refs.reduce((a, r) => a + ent(r.monto), 0);
-  const precioExacto = (plan.anticipo || 0) + refTotalExacto + (plan.cuotaObra || 0) * (plan.nTotal || 0);
-  const ajusteUltimaCuota = Math.round(precioExacto)
-    - (ent(plan.anticipo) + cuotaVista * (plan.nTotal || 0) + refTotalImpreso);
   // Mes 0: anticipo
-  const antVista = ent(plan.anticipo);
+  const antVista = plan.anticipo || 0;
   acum += antVista;
   // El anticipo NO va en la columna "Cuota obra": no es una cuota de obra. Sí va en
   // Amortización, que lleva el capital de TODOS los pagos (ver más abajo).
   sumA += antVista;
   filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td>${f(antVista)}</td><td><strong>${f(antVista)}</strong></td><td>${f(acum)}</td></tr>`);
+  // (antVista es el anticipo exacto; round500 ya lo dejó entero, pero no se asume)
   // Obra — comprimida (Fede 2026-08-19, 2ª iteración): períodos de cuotas de obra con el MISMO
   // pago, cortados en cada mes con refuerzo (inclusive) y en la posesión. Fila del período:
   // "Meses a–b · cuotas de obra", Pago del mes = la cuota (lo que paga cada mes). Fila aparte
@@ -4173,14 +4167,14 @@ function cuadroMarchaHTML(plan, opts) {
     let fin = m;
     while (fin < nObra && !refEnMes(fin)) fin++;   // hasta el próximo mes con refuerzo o la posesión (inclusive)
     const n = fin - m + 1;
-    acum += cuotaVista * n; sumA += cuotaVista * n;
-    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaVista)}</td><td></td><td></td><td>${f(cuotaVista)}</td><td><strong>${f(cuotaVista)}</strong></td><td>${f(acum)}</td></tr>`);
+    acum += cuotaObra * n; sumA += cuotaObra * n;
+    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
     const ref = refEnMes(fin);
     const esPos = fin === nObra;
     if (ref || esPos) {
       acum += ref; sumRef += ref; sumA += ref;
       const etiqueta = esPos ? (ref ? 'Posesión · refuerzo' : 'Posesión') : 'Refuerzo';
-      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td>${ref ? f(ref) : ''}</td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaVista + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
+      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td>${ref ? f(ref) : ''}</td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaObra + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
     }
     m = fin + 1;
   }
@@ -4188,21 +4182,19 @@ function cuadroMarchaHTML(plan, opts) {
   // ignoraba `plan.refuerzos` por completo, así que un refuerzo del mes 24 era invisible en el
   // documento aunque el motor lo calculara bien. La fila muestra el desembolso REAL del mes
   // (cuota + refuerzo + interés), que es lo que el cliente va a transferir.
-  plan.cuadro.forEach((r, idx) => {
-    const iV = ent(r.interes), rV = ent(r.refuerzo || 0);
-    const esUltima = idx === plan.cuadro.length - 1;
-    // capital del mes: la cuota, más el refuerzo si lo hay, más el ajuste de redondeo si es la última
-    const amort = cuotaVista + rV + (esUltima ? ajusteUltimaCuota : 0);
+  plan.cuadro.forEach(r => {
+    const iV = r.interes || 0, rV = r.refuerzo || 0;
+    const amort = cuotaObra + rV;           // capital del mes: la cuota más el refuerzo si lo hay
     const pago = amort + iV;
     acum += pago; sumI += iV; sumRef += rV; sumA += amort;
     const etiqueta = rV ? 'Cuota en tenencia · refuerzo' : 'Cuota en tenencia';
     filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td></td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
   });
-  // Totales = suma aritmética de lo impreso en cada columna.
-  //   Amortización = capital total = el precio de la unidad (salvo el residuo del redondeo).
+  // Totales: los acumuladores exactos, redondeados al imprimir.
+  //   Amortización = capital total = el precio de la unidad, al dólar.
   //   Amortización + Interés = Pago del mes = último acumulado.
   // Cuota obra y Refuerzo son la apertura de ese capital, no sumandos aparte.
-  const sumObra = cuotaVista * nObra;
+  const sumObra = cuotaObra * nObra;
   const leyenda = (opts && opts.leyendaIntereses) || '';
   return `
       <div class="minuta-seccion minuta-cuadro-marcha">
@@ -4217,7 +4209,7 @@ function cuadroMarchaHTML(plan, opts) {
             <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumObra)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
           </tbody>
         </table>
-        <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. Cuota obra y Refuerzo abren ese capital según su origen. Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo; la última cuota ajusta la diferencia.</div>
+        <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. Cuota obra y Refuerzo abren ese capital según su origen. Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
         ${leyenda ? `<div class="minuta-cuadro-nota">${leyenda}</div>` : ''}
       </div>`;
 }
@@ -10632,7 +10624,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2026-10-29: la columna Amortización lleva el capital de TODOS los pagos (anticipo,
         // cuotas de obra, refuerzos y cuotas de tenencia), para que su total sea el precio y el
         // cliente pueda compararlo. De ahí las dos identidades, exactas y sin tolerancia:
-        if (nums[2] + nums[3] !== nums[5]) errores.push('interés + amortización ≠ total: ' + (nums[2] + nums[3]) + ' vs ' + nums[5]);
+        // Los acumuladores van exactos y se redondean al imprimir, así que los tres totales
+        // pueden quedar a un dólar entre sí por el redondeo de cada uno. Más que eso es un bug.
+        if (Math.abs(nums[2] + nums[3] - nums[5]) > 1) errores.push('interés + amortización ≠ total: ' + (nums[2] + nums[3]) + ' vs ' + nums[5]);
         // Cuota obra y Refuerzo son apertura del capital, no sumandos aparte: tienen que estar
         // CONTENIDOS en amortización, nunca sumar más que ella.
         if (nums[0] + nums[1] > nums[3]) errores.push('cuota obra + refuerzos excede la amortización: ' + (nums[0] + nums[1]) + ' vs ' + nums[3]);
