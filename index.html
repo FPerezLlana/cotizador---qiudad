@@ -4149,11 +4149,11 @@ function cuadroMarchaHTML(plan, opts) {
   // acumulado final —el redondeo de cada celda, acotado a medio dólar, repetido nTotal veces—,
   // y eso es lo que cubre la nota al pie. La alternativa (absorber el residuo en la última
   // cuota) hacía cerrar la suma pero dejaba una cuota hasta 30 USD más alta que las otras 59.
-  let acum = 0, sumRef = 0, sumI = 0, sumA = 0;
+  let acum = 0, sumRef = 0, sumI = 0, sumA = 0, sumCuotas = 0;
   // Mes 0: anticipo
   const antVista = plan.anticipo || 0;
   acum += antVista;
-  // El anticipo NO va en la columna "Cuota obra": no es una cuota de obra. Sí va en
+  // El anticipo NO va en la columna "Cuota": no es una cuota. Sí va en
   // Amortización, que lleva el capital de TODOS los pagos (ver más abajo).
   sumA += antVista;
   filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td>${f(antVista)}</td><td><strong>${f(antVista)}</strong></td><td>${f(acum)}</td></tr>`);
@@ -4162,21 +4162,33 @@ function cuadroMarchaHTML(plan, opts) {
   // pago, cortados en cada mes con refuerzo (inclusive) y en la posesión. Fila del período:
   // "Meses a–b · cuotas de obra", Pago del mes = la cuota (lo que paga cada mes). Fila aparte
   // para el refuerzo de ese mes (y la posesión), con el total del mes. Acumulado al cierre de cada fila.
+  // El mes con refuerzo (y el de la posesión) sale del período agrupado y lleva su propia fila
+  // COMPLETA: la cuota de ese mes más el refuerzo (2026-10-29). Antes el período lo incluía y la
+  // fila del refuerzo sumaba solo el refuerzo, con el total del mes como texto al costado — así
+  // la fila mostraba amortización 14.500 y pago 15.676, contradiciendo la regla del pie
+  // (pago = amortización + interés). Ahora el período corre hasta el mes anterior y cada fila
+  // de hito es autosuficiente: Cuota + Refuerzo = Amortización = Pago del mes.
   let m = 1;
   while (m <= nObra) {
-    let fin = m;
-    while (fin < nObra && !refEnMes(fin)) fin++;   // hasta el próximo mes con refuerzo o la posesión (inclusive)
-    const n = fin - m + 1;
-    acum += cuotaObra * n; sumA += cuotaObra * n;
-    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
-    const ref = refEnMes(fin);
-    const esPos = fin === nObra;
-    if (ref || esPos) {
-      acum += ref; sumRef += ref; sumA += ref;
-      const etiqueta = esPos ? (ref ? 'Posesión · refuerzo' : 'Posesión') : 'Refuerzo';
-      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td>${ref ? f(ref) : ''}</td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaObra + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
+    // Próximo hito: el primer mes con refuerzo, o la posesión.
+    let hito = m;
+    while (hito < nObra && !refEnMes(hito)) hito++;
+    // Período de cuotas simples: m .. hito−1 (puede quedar vacío si el hito es el propio m)
+    if (hito > m) {
+      const n = hito - m, ult = hito - 1;
+      acum += cuotaObra * n; sumA += cuotaObra * n; sumCuotas += cuotaObra * n;
+      filas.push(`<tr><td>${n > 1 ? m + '–' + ult : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + ult : 'cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
     }
-    m = fin + 1;
+    // Fila del hito: el mes entero
+    const ref = refEnMes(hito);
+    const esPos = hito === nObra;
+    const amort = cuotaObra + ref;
+    acum += amort; sumRef += ref; sumA += amort; sumCuotas += cuotaObra;
+    const etiqueta = esPos
+      ? (ref ? 'Posesión · cuota ' + hito + ' y refuerzo' : 'Posesión · cuota ' + hito)
+      : 'Obra · cuota ' + hito + ' y refuerzo';
+    filas.push(`<tr class="minuta-row-hito"><td>${hito}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${ref ? f(ref) : ''}</td><td></td><td>${f(amort)}</td><td><strong>${f(amort)}</strong></td><td>${f(acum)}</td></tr>`);
+    m = hito + 1;
   }
   // Financiación. El loop ahora dibuja también los refuerzos POSTERIORES a la posesión: antes
   // ignoraba `plan.refuerzos` por completo, así que un refuerzo del mes 24 era invisible en el
@@ -4186,15 +4198,16 @@ function cuadroMarchaHTML(plan, opts) {
     const iV = r.interes || 0, rV = r.refuerzo || 0;
     const amort = cuotaObra + rV;           // capital del mes: la cuota más el refuerzo si lo hay
     const pago = amort + iV;
-    acum += pago; sumI += iV; sumRef += rV; sumA += amort;
-    const etiqueta = rV ? 'Cuota en tenencia · refuerzo' : 'Cuota en tenencia';
-    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td></td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
+    acum += pago; sumI += iV; sumRef += rV; sumA += amort; sumCuotas += cuotaObra;
+    const etiqueta = rV ? 'Tenencia · cuota y refuerzo' : 'Cuota en tenencia';
+    // La columna Cuota lleva el MISMO número los nTotal meses, en obra y en tenencia: es la
+    // cuota de capital, que no cambia. Lo que varía mes a mes es el interés, en su columna.
+    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
   });
   // Totales: los acumuladores exactos, redondeados al imprimir.
   //   Amortización = capital total = el precio de la unidad, al dólar.
   //   Amortización + Interés = Pago del mes = último acumulado.
-  // Cuota obra y Refuerzo son la apertura de ese capital, no sumandos aparte.
-  const sumObra = cuotaObra * nObra;
+  //   Anticipo + Cuotas + Refuerzos = Amortización (la apertura del capital por origen).
   const leyenda = (opts && opts.leyendaIntereses) || '';
   return `
       <div class="minuta-seccion minuta-cuadro-marcha">
@@ -4202,14 +4215,14 @@ function cuadroMarchaHTML(plan, opts) {
           <span class="minuta-seccion-sub">Anticipo en la firma · ${plan.nTotal} cuotas de capital iguales, las primeras ${nObra} durante la obra y las restantes ${plan.nFin} en tenencia · los refuerzos se pagan en su mes, incluidos los posteriores a la posesión · sobre el saldo pendiente desde la posesión se devenga un ${fmt(plan.tasaMensualSaldo, 2)} % mensual, que se paga y no se capitaliza. El ejemplo supone una entrega estimada al mes ${nObra}. Valores en USD.</span>
         </div>
         <table class="minuta-tabla minuta-tabla-cuadro">
-          <thead><tr><th>Mes</th><th>Etapa</th><th>Cuota obra</th><th>Refuerzo</th><th>Interés</th><th>Amortización</th><th>Pago del mes</th><th>Acumulado</th></tr></thead>
+          <thead><tr><th>Mes</th><th>Etapa</th><th>Cuota</th><th>Refuerzo</th><th>Interés</th><th>Amortización</th><th>Pago del mes</th><th>Acumulado</th></tr></thead>
           <tbody>${filas.join('')}
             <tr class="minuta-row-espacio"><td colspan="8"></td></tr>
-            <tr class="minuta-row-subhead"><td colspan="2">Acumulados del plan</td><td>Cuotas de obra</td><td>Refuerzos</td><td>Intereses</td><td>Capital amortizado</td><td>Total pagado</td><td>Acumulado</td></tr>
-            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumObra)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
+            <tr class="minuta-row-subhead"><td colspan="2">Acumulados del plan</td><td>Cuotas</td><td>Refuerzos</td><td>Intereses</td><td>Capital amortizado</td><td>Total pagado</td><td>Acumulado</td></tr>
+            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumCuotas)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
           </tbody>
         </table>
-        <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. Cuota obra y Refuerzo abren ese capital según su origen. Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
+        <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. La columna Cuota es la cuota de capital, igual en los ${plan.nTotal} meses; el Anticipo, las Cuotas y los Refuerzos abren ese capital según su origen. El mes con refuerzo y el de la posesión van en fila propia, con el pago completo de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
         ${leyenda ? `<div class="minuta-cuadro-nota">${leyenda}</div>` : ''}
       </div>`;
 }
@@ -10602,15 +10615,16 @@ document.addEventListener('DOMContentLoaded', () => {
       generarMinuta();
       const filas = cont.querySelectorAll('.minuta-tabla-cuadro tbody tr');
       const ext = calcPlanExtendido(uS, 30000, [], 0, planState.nTotal || params.nTotalMax);
-      // obra comprimida: sin refuerzos y nObra 36 → 1 fila 'Meses 1–36' + 1 fila posesión
+      // obra comprimida: sin refuerzos y nObra 36 → 1 fila 'Meses 1–35' + 1 fila de posesión,
+      // que desde 2026-10-29 se lleva la cuota del mes 36 (el período corta en el mes anterior)
       const filasObraEsperadas = 2;
       // mes 0 + obra + tenencia + separador + encabezado de acumulados + totales
       const filasEsperadas = 1 + filasObraEsperadas + ext.nFin + 3;
       if (filas.length !== filasEsperadas) errores.push(`plan completo ${filas.length} filas ≠ ${filasEsperadas}`);
-      if (!/1–36/.test(cont.querySelector('.minuta-tabla-cuadro').textContent)) errores.push('sin fila agrupada 1–36');
+      if (!/1–35/.test(cont.querySelector('.minuta-tabla-cuadro').textContent)) errores.push('sin fila agrupada 1–35');
       const tot = cont.querySelector('.minuta-tabla-cuadro .minuta-row-total');
       const nums = tot ? [...tot.querySelectorAll('td')].map(td => parseFloat(td.textContent.replace(/[^0-9,.-]/g, '').replace(/\./g, '').replace(',', '.'))).filter(n => !isNaN(n)) : [];
-      // [sumObra, sumRef, sumI, sumA, acumulado, totalUSD]
+      // [sumCuotas, sumRef, sumI, sumA, acumulado, totalUSD]
       if (nums.length < 6) errores.push('totales: ' + nums.join(','));
       else {
         // 2026-10-29: el cuadro pasó a ser un LIBRO ENTERO. Cada monto se redondea una vez, los
@@ -10627,9 +10641,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Los acumuladores van exactos y se redondean al imprimir, así que los tres totales
         // pueden quedar a un dólar entre sí por el redondeo de cada uno. Más que eso es un bug.
         if (Math.abs(nums[2] + nums[3] - nums[5]) > 1) errores.push('interés + amortización ≠ total: ' + (nums[2] + nums[3]) + ' vs ' + nums[5]);
-        // Cuota obra y Refuerzo son apertura del capital, no sumandos aparte: tienen que estar
+        // Cuota y Refuerzo son apertura del capital, no sumandos aparte: tienen que estar
         // CONTENIDOS en amortización, nunca sumar más que ella.
-        if (nums[0] + nums[1] > nums[3]) errores.push('cuota obra + refuerzos excede la amortización: ' + (nums[0] + nums[1]) + ' vs ' + nums[3]);
+        if (nums[0] + nums[1] > nums[3]) errores.push('cuotas + refuerzos excede la amortización: ' + (nums[0] + nums[1]) + ' vs ' + nums[3]);
         // El capital amortizado tiene que dar EXACTO contra el precio: es el número que el
         // cliente contrasta. El residuo del redondeo lo absorbe la última cuota de tenencia.
         if (nums[3] !== Math.round(uS.precioReferencia)) errores.push('Σ amortización ≠ precio: ' + nums[3] + ' vs ' + Math.round(uS.precioReferencia));
