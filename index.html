@@ -4132,14 +4132,20 @@ function cuadroMarchaHTML(plan, opts) {
   const refEnMes = (m) => refs.filter(r => r.mes === m).reduce((a, r) => a + ent(r.monto), 0);
   const cuotaVista = ent(plan.cuotaObra);   // la misma en los nTotal meses, obra y tenencia
   const filas = [];
-  let acum = 0, sumRef = 0, sumI = 0;
+  // Amortización = capital que cancela CADA pago, incluido el anticipo y los refuerzos
+  // (2026-10-29). Antes la columna solo se llenaba en las cuotas de tenencia y quedaba vacía en
+  // los tres cuartos de la tabla. Llenándola siempre, su total es el precio de la unidad y el
+  // cliente puede contrastar lo que paga de capital contra lo que le cotizaron — que es la
+  // verificación que la minuta perdió al sacarle los porcentajes.
+  // Identidad por fila y en los totales: Pago del mes = Amortización + Interés.
+  let acum = 0, sumRef = 0, sumI = 0, sumA = 0;
   // Mes 0: anticipo
   const antVista = ent(plan.anticipo);
   acum += antVista;
-  // El anticipo NO va en la columna "Cuota obra": no es una cuota de obra y su total no lo
-  // incluía, así que sumar esa columna daba 28.500 de más. Va solo en Pago del mes, que es lo
-  // que el cliente paga ese mes, y la etapa lo nombra.
-  filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td></td><td><strong>${f(antVista)}</strong></td><td>${f(acum)}</td></tr>`);
+  // El anticipo NO va en la columna "Cuota obra": no es una cuota de obra. Sí va en
+  // Amortización, que lleva el capital de TODOS los pagos (ver más abajo).
+  sumA += antVista;
+  filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td>${f(antVista)}</td><td><strong>${f(antVista)}</strong></td><td>${f(acum)}</td></tr>`);
   // Obra — comprimida (Fede 2026-08-19, 2ª iteración): períodos de cuotas de obra con el MISMO
   // pago, cortados en cada mes con refuerzo (inclusive) y en la posesión. Fila del período:
   // "Meses a–b · cuotas de obra", Pago del mes = la cuota (lo que paga cada mes). Fila aparte
@@ -4149,14 +4155,14 @@ function cuadroMarchaHTML(plan, opts) {
     let fin = m;
     while (fin < nObra && !refEnMes(fin)) fin++;   // hasta el próximo mes con refuerzo o la posesión (inclusive)
     const n = fin - m + 1;
-    acum += cuotaVista * n;
-    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaVista)}</td><td></td><td></td><td></td><td><strong>${f(cuotaVista)}</strong></td><td>${f(acum)}</td></tr>`);
+    acum += cuotaVista * n; sumA += cuotaVista * n;
+    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaVista)}</td><td></td><td></td><td>${f(cuotaVista)}</td><td><strong>${f(cuotaVista)}</strong></td><td>${f(acum)}</td></tr>`);
     const ref = refEnMes(fin);
     const esPos = fin === nObra;
     if (ref || esPos) {
-      acum += ref; sumRef += ref;
+      acum += ref; sumRef += ref; sumA += ref;
       const etiqueta = esPos ? (ref ? 'Posesión · refuerzo' : 'Posesión') : 'Refuerzo';
-      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td></td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaVista + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
+      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td>${ref ? f(ref) : ''}</td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaVista + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
     }
     m = fin + 1;
   }
@@ -4166,16 +4172,17 @@ function cuadroMarchaHTML(plan, opts) {
   // (cuota + refuerzo + interés), que es lo que el cliente va a transferir.
   plan.cuadro.forEach(r => {
     const iV = ent(r.interes), rV = ent(r.refuerzo || 0);
-    const pago = cuotaVista + iV + rV;
-    acum += pago; sumI += iV; sumRef += rV;
+    const amort = cuotaVista + rV;          // capital del mes: la cuota más el refuerzo si lo hay
+    const pago = amort + iV;
+    acum += pago; sumI += iV; sumRef += rV; sumA += amort;
     const etiqueta = rV ? 'Cuota en tenencia · refuerzo' : 'Cuota en tenencia';
-    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td></td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(cuotaVista)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
+    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td></td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
   });
-  // Totales = suma aritmética de lo impreso en cada columna. El capital queda repartido entre
-  // Cuota obra, Refuerzo y Amortización, y las tres suman el precio: los refuerzos posteriores
-  // a la posesión son capital y viven en su columna, no se duplican en Amortización.
+  // Totales = suma aritmética de lo impreso en cada columna.
+  //   Amortización = capital total = el precio de la unidad (salvo el residuo del redondeo).
+  //   Amortización + Interés = Pago del mes = último acumulado.
+  // Cuota obra y Refuerzo son la apertura de ese capital, no sumandos aparte.
   const sumObra = cuotaVista * nObra;
-  const sumA = cuotaVista * (plan.nFin || 0);
   const leyenda = (opts && opts.leyendaIntereses) || '';
   return `
       <div class="minuta-seccion minuta-cuadro-marcha">
@@ -4188,7 +4195,7 @@ function cuadroMarchaHTML(plan, opts) {
             <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumObra)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
           </tbody>
         </table>
-        <div class="minuta-cuadro-nota">Pago del mes = lo que se paga cada mes del período (obra: la cuota de capital; tenencia: capital + interés, más el refuerzo si lo hay). Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
+        <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. Cuota obra y Refuerzo abren ese capital según su origen. Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
         ${leyenda ? `<div class="minuta-cuadro-nota">${leyenda}</div>` : ''}
       </div>`;
 }
@@ -10598,12 +10605,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // el residuo del redondeo va declarado en la nota al pie.
         // Las tres identidades son EXACTAS, sin tolerancia: si alguna falla, la tabla miente.
         if (nums[4] !== nums[5]) errores.push('acumulado ≠ total del cuadro: ' + nums[4] + ' vs ' + nums[5]);
-        if ((30000 + nums[0] + nums[1] + nums[2] + nums[3]) !== nums[5]) errores.push('anticipo+obra+ref+int+amort ≠ total: ' + (30000 + nums[0] + nums[1] + nums[2] + nums[3]) + ' vs ' + nums[5]);
-        // Amortización y cuota de obra son el MISMO número repetido (A = cuotaObra), así que sus
-        // totales tienen que estar en la proporción nFin : nObra exacta.
-        if (nums[3] * ext.nObra !== nums[0] * ext.nFin) errores.push('Σ amortización y Σ cuota obra no salen de la misma cuota');
-        // Y el residuo contra el motor exacto queda acotado: a lo sumo medio dólar por cuota.
-        if (Math.abs(nums[3] - ext.saldo) > ext.nFin) errores.push('Σ amortización se despega del saldo más de lo que explica el redondeo');
+        // 2026-10-29: la columna Amortización lleva el capital de TODOS los pagos (anticipo,
+        // cuotas de obra, refuerzos y cuotas de tenencia), para que su total sea el precio y el
+        // cliente pueda compararlo. De ahí las dos identidades, exactas y sin tolerancia:
+        if (nums[2] + nums[3] !== nums[5]) errores.push('interés + amortización ≠ total: ' + (nums[2] + nums[3]) + ' vs ' + nums[5]);
+        // Cuota obra y Refuerzo son apertura del capital, no sumandos aparte: tienen que estar
+        // CONTENIDOS en amortización, nunca sumar más que ella.
+        if (nums[0] + nums[1] > nums[3]) errores.push('cuota obra + refuerzos excede la amortización: ' + (nums[0] + nums[1]) + ' vs ' + nums[3]);
+        // Y el residuo contra el motor exacto queda acotado: a lo sumo un dólar por cuota.
+        if (Math.abs(nums[3] - uS.precioReferencia) > ext.nTotal) errores.push('Σ amortización ≠ precio: ' + nums[3] + ' vs ' + uS.precioReferencia);
         if (Math.abs(nums[5] - ext.totalUSD) > ext.nTotal) errores.push('total del cuadro se despega de totalUSD: ' + nums[5] + ' vs ' + Math.round(ext.totalUSD));
       }
       if (!cont.querySelector('.minuta-logo-svg svg')) errores.push('sensum sin logo SVG en minuta');
