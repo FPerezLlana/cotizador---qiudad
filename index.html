@@ -1879,12 +1879,12 @@
       <div class="form-group">
         <label>Anticipo precargado (%)</label>
         <input type="number" id="p-ant-default" class="mono" value="20" step="1" oninput="leerParametrosDeUI()">
-        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Valor que se sugiere por default al abrir el cotizador. Se redondea a 1.000.</div>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Valor que se sugiere por default al abrir el cotizador. Se redondea a 500.</div>
       </div>
       <div class="form-group">
         <label>Refuerzos precargados (% sobre precio referencia)</label>
         <div id="p-refuerzos-default" style="display:flex;flex-direction:column;gap:6px;margin-top:4px;"></div>
-        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Plan de pago sugerido al abrir el cotizador. El refuerzo con mes "posesión" cae en el mes de fin de obra vigente. Se redondea a 1.000.</div>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Plan de pago sugerido al abrir el cotizador. Los montos se redondean a 500. El refuerzo marcado como "posesión" queda atado a la entrega: en los proyectos que lo declaran se muestra sin mes, y en el resto cae en el mes de fin de obra vigente. Solo una fila puede estar marcada.</div>
       </div>
       <div class="form-group">
         <label>GIA (%)</label>
@@ -1929,7 +1929,7 @@
       <div class="form-group" data-solo-no-edilia="1">
         <label>Plazo máximo del plan extendido (cuotas totales)</label>
         <input type="number" id="p-ntotal-max" class="mono" value="60" step="1" min="2" oninput="leerParametrosDeUI()">
-        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Tope del selector de plazo que ve el vendedor (obra + financiación). Debe ser mayor que los meses hasta fin de obra.</div>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Tope del selector de plazo que ve el vendedor (obra + financiación). Debe ser mayor que los meses hasta fin de obra y no menor que la duración mínima de un plan (36 cuotas).</div>
       </div>
       <div class="form-group" data-solo-no-edilia="1">
         <label>Tasa mensual sobre saldo (%)</label>
@@ -2300,6 +2300,19 @@ let inversoState = { anticipo: '', cuota: '' }; // persiste valores de inputs in
 // params.tnaEdiliaObj es un mapa { 60, 120, 180, 240 }, editable por plazo en el panel Parámetros.
 const TNA_EDILIA_OBJ_DEFAULT = 14.283;
 const PLAZOS_FINANCIACION = [60, 120, 180, 240];
+
+// Duración mínima de un plan extendido, en cuotas totales (2026-10-29, Fede: "la duración
+// mínima es siempre 36"). Decisión comercial, igual para todos los proyectos, no param: no hay
+// caso de uso de moverla por proyecto y un param nuevo no puede nacer con valores distintos por
+// proyecto (migrarParams es agnóstico y el doc de Firestore pisa `params` entero).
+// El piso efectivo del selector es max(N_TOTAL_MIN, nObra + 6): nunca ofrece un plan más corto
+// que la obra. Con obra de 36 (Sensum) el piso sigue siendo 42 y nada cambia; con obra de 14
+// (Terrazas) pasa a 36, que es además lo que garantiza que el refuerzo del mes 24 siempre entre.
+// El MOTOR no lo aplica: calcPlanExtendido sigue aceptando cualquier nTotal > nObra, porque esto
+// es regla comercial y no invariante financiero (los tests J usan 37 y 40).
+const N_TOTAL_MIN = 36;
+// Paso de la grilla de plazos ofrecidos, en meses.
+const PASO_PLAZOS = 6;
 function defaultTnaObjMap() {
   const m = {};
   PLAZOS_FINANCIACION.forEach(n => { m[n] = TNA_EDILIA_OBJ_DEFAULT; });
@@ -2449,17 +2462,41 @@ const PROYECTOS_DEFAULT = {
     // las unidades que puedan estar cargadas con ese tipo.
     tiposUnidad: ['Departamento', 'Local', 'Cochera', 'Baulera',
                   'Baulera en subsuelo', 'Baulera chica en P15', 'Baulera grande en P15'],
+    // ── Refuerzo de posesión atado al HITO (2026-10-29) ──
+    // Declara el modelo de refuerzos del proyecto: el de posesión está atado al hito y se
+    // muestra como "Posesión", SIN mes; los demás caen en el mes indicado y no se mueven.
+    // Tres consecuencias, todas colgadas de esta bandera (una sola declaración, no tres):
+    //   1. construirRefuerzosDefault marca ese refuerzo con `esPosesion` (el `mes` se sigue
+    //      resolviendo a nObra igual que siempre: la marca es lo único que cambia).
+    //   2. Los sitios que imprimen el mes escriben "Posesión" en vez del número.
+    //   3. La leyenda de vencimiento de refuerzos NO se emite — con un refuerzo deliberadamente
+    //      posterior a la posesión (mes 24 contra obra de 14), "lo que ocurra primero" lo
+    //      adelantaría diez meses y contradiría al cuadro de marcha del mismo documento.
+    // Qiudad y Sensum no la declaran: conservan el mes literal congelado (la decisión de caja
+    // de index_87) y su leyenda sin cambios. Va en la ESTRUCTURA y no en `params` porque no
+    // tiene UI para editarse — convención de index_96, y además el doc de Firestore pisa
+    // `params` entero, así que un valor nuevo ahí no llegaría a producción.
+    refuerzoPosesionAlHito: true,
+    // Leyenda al pie de la marcha de cálculo de cuotas (minuta y solicitud). El % NO va escrito:
+    // `{tasa}` se reemplaza con la tasa del PLAN al renderizar — del plan y no de `params`,
+    // porque la solicitud reimpresa reconstruye el cuadro desde la tasa congelada y el texto
+    // tiene que decir la misma que los números que está al lado. Los otros tres proyectos no
+    // declaran el campo y su documento queda idéntico al byte.
+    leyendaIntereses: 'Ejemplo ilustrativo. Los intereses se calcularán de acuerdo a la fecha real de entrega y al saldo pendiente vigente a esa fecha, devengando un interés del {tasa} % mensual.',
     params: {
       antMinPct: 20, integracionMinPct: 50, antDefaultPct: 20,   // PLACEHOLDER = Qiudad (V9 pendiente)
       aportesMinPosesionPct: 20,  // 2026-08-19 (Fede): 20 % provisorio para testear — ver comentario en sensum
-      nObraVigente: 36,          // PLACEHOLDER 2026-08-19: Fede pide asumir 36 por ahora (el dato real
-                                 // fue 18 el 2026-08-14/18; lo re-confirma). Se ajusta desde el panel.
+      nObraVigente: 36,          // 2026-10-29: el plazo de obra real pasa a 14. Este valor se
+                                 // confirma DESDE EL PANEL, no acá: el doc de Firestore pisa
+                                 // `params` entero, así que cambiarlo en el código no llega a
+                                 // producción. Orden obligatorio: deployar primero, bajarlo después.
       nTotalMax: 60,             // confirmado por Fede 2026-08-18
       tasaMensualSaldo: 1,
-      // Confirmado por Fede 2026-08-19: anticipo 20 % + refuerzos 7 % / 7 % / 20 %. Meses = Qiudad
-      // (nObra asumido 36). Si nObra vuelve a 18, el refuerzo del mes 24 no cabe y se descarta:
-      // revisar los meses junto con nObra. El vendedor puede mover los meses en el cotizador.
-      refuerzosDefault: [ { pct: 7, mes: 12 }, { pct: 7, mes: 24 }, { pct: 20, mes: 'posesion' } ],
+      // Plan vigente (2026-10-29): anticipo 20 % + refuerzos 10 % / 10 % / 10 % en los meses
+      // 12, 24 y posesión. Con la obra en 14 meses, el del mes 24 cae DESPUÉS de la posesión y
+      // el motor lo modela como tal (ver calcPlanExtendido). Los porcentajes de producción ya
+      // son 10/10/10 — editados desde el panel; estos valores son el default de un proyecto nuevo.
+      refuerzosDefault: [ { pct: 10, mes: 12 }, { pct: 10, mes: 24 }, { pct: 10, mes: 'posesion' } ],
       descMax: 30, tierra: 15,
       tnaEdiliaObj: defaultTnaObjMap(),
       umbralObraM2: 1500,
@@ -3058,21 +3095,54 @@ function normRefuerzos(refuerzos, q) {
   return arr.filter(r => r && r.monto != null && r.monto > 0 && r.mes != null && r.mes <= nObra);
 }
 
+// Plazo total vigente para el proyecto activo: el que eligió el vendedor, acotado al tope del
+// proyecto y a que haya al menos un mes de financiación. Único lugar donde se resuelve.
+function nTotalVigente() {
+  const nObra = params.nObraVigente || 0;
+  const nMax  = params.nTotalMax || (nObra + 1);
+  const nSel  = (typeof planState !== 'undefined' && planState.nTotal) || nMax;
+  return Math.min(nMax, Math.max(nObra + 1, nSel));
+}
+
 // Construye los refuerzos precargados a partir de params.refuerzosDefault.
 // Cada entry es {pct, mes} donde mes puede ser un número o 'posesion'.
-// 'posesion' se RESUELVE a nObraVigente EN ESTE MOMENTO y queda literal (sin ancla viva):
-// si la obra se atrasa el hito firmado no se mueve; si se adelanta, una cotización nueva
-// lo coloca en el mes más temprano. El % es de la suma de precioReferencia del paquete.
+// 'posesion' se RESUELVE a nObraVigente EN ESTE MOMENTO y queda como número: el motor, el
+// cuadro y el snapshot trabajan siempre con meses numéricos. Lo que cambia (2026-10-29) es que
+// en los proyectos que declaran `refuerzoPosesionAlHito` ese refuerzo viaja además con la marca
+// `esPosesion`, y los sitios que IMPRIMEN el mes escriben "Posesión" en vez del número. El dato
+// sigue siendo un número en todo el pipeline — por eso normRefuerzos, el cuadro, el orden y el
+// snapshot no necesitan saber nada de esto.
+// El corte es `mes <= nTotal`, NO `mes <= nObra`: desde que existen refuerzos posteriores a la
+// posesión (Terrazas, mes 24 con obra de 14), filtrar por nObra los descartaba antes de que
+// llegaran al cotizador. El % es de la suma de precioReferencia del paquete.
 function construirRefuerzosDefault(paquete) {
   const sumaRef = (paquete.todas || []).reduce((s, u) => s + (u.precioReferencia || 0), 0);
   const nObra = params.nObraVigente || 0;
+  const nTot  = nTotalVigente();
+  const alHito = !!(proyectoCfg() || {}).refuerzoPosesionAlHito;
   const defs = params.refuerzosDefault || [];
   return defs
-    .map(d => ({
-      monto: round500(sumaRef * (d.pct || 0) / 100),
-      mes:   d.mes === 'posesion' ? nObra : d.mes
-    }))
-    .filter(r => r.monto > 0 && r.mes != null && r.mes <= nObra);
+    .map(d => {
+      const esPos = d.mes === 'posesion';
+      const r = { monto: round500(sumaRef * (d.pct || 0) / 100), mes: esPos ? nObra : d.mes };
+      if (esPos && alHito) r.esPosesion = true;
+      return r;
+    })
+    .filter(r => r.monto > 0 && r.mes != null && r.mes <= nTot);
+}
+
+// Parte una lista de refuerzos en los que caen DURANTE la obra (corte inclusivo: el pago en
+// posesión cuenta, igual que R3 y que `prestamo = precioRef − recaudObra`) y los POSTERIORES.
+// Solo la usa calcPlanExtendido. normRefuerzos queda intacta y sigue devolviendo únicamente los
+// de obra, que es lo que mantiene a los planes Edilia estructuralmente fuera de este cambio:
+// calcPlan36/60/120/180/240 no pueden ver un refuerzo post ni por accidente.
+function partirRefuerzos(refuerzos, q, nTotal) {
+  const nObra = params.nObraVigente || 0;
+  const obra = normRefuerzos(refuerzos, q);          // mes ≤ nObra, monto > 0
+  const post = (Array.isArray(refuerzos) ? refuerzos : [])
+    .filter(r => r && r.monto != null && r.monto > 0 && r.mes != null
+                 && r.mes > nObra && r.mes <= nTotal);
+  return { obra, post };
 }
 
 // Formatea una lista de meses: "mes 12" · "meses 12 y 24" · "meses 12, 24 y 36".
@@ -3082,23 +3152,34 @@ function fmtMeses(meses) {
   return 'meses ' + ms.slice(0, -1).join(', ') + ' y ' + ms[ms.length - 1];
 }
 
+// Etiqueta del vencimiento de UN refuerzo. El `mes` es siempre un número —el motor, el cuadro y
+// el snapshot trabajan con números—; lo que decide qué se imprime es la marca `esPosesion`, que
+// construirRefuerzosDefault pone solo en los proyectos que declaran `refuerzoPosesionAlHito`.
+// En esos, ese refuerzo está atado al hito y mostrar un mes sería comprometer una fecha que el
+// plan no compromete. En el resto se imprime el mes literal, como siempre.
+function etiquetaMesRefuerzo(r) {
+  return (r && r.esPosesion) ? 'Posesión' : ('mes ' + (r ? r.mes : ''));
+}
+
 // String de refuerzos para la comparativa/minuta. Cada bloque = monto con los meses
 // en chico DEBAJO, para no recargar la celda. Refuerzos de IGUAL monto se agrupan en un
 // solo bloque ("USD 5.000 / meses 12 y 24"); los distintos quedan separados.
-// Mes numérico (sin "posesión"). fmtMon define USD/ARS según el plan.
+// El refuerzo de posesión NO se agrupa con los de mes numérico aunque coincida el monto: su
+// etiqueta es "Posesión" y mezclarla en "meses 12 y 24" la perdería. fmtMon define USD/ARS.
 function fmtRefuerzosCell(refuerzos, fmtMon) {
   if (!refuerzos || refuerzos.length === 0) return '—';
-  // Agrupar por monto, preservando el orden de primera aparición.
+  // Agrupar por monto, preservando el orden de primera aparición. Los de posesión van sueltos.
   const grupos = [];
   refuerzos.forEach(r => {
-    const g = grupos.find(x => x.monto === r.monto);
+    if (r.esPosesion) { grupos.push({ monto: r.monto, meses: [], etiqueta: 'Posesión' }); return; }
+    const g = grupos.find(x => x.monto === r.monto && !x.etiqueta);
     if (g) g.meses.push(r.mes);
     else grupos.push({ monto: r.monto, meses: [r.mes] });
   });
   return grupos
     .map(g => '<span style="display:inline-block;vertical-align:top;text-align:left;margin-right:16px;white-space:nowrap;line-height:1.25;">'
       + fmtMon(g.monto)
-      + '<br><span style="color:var(--gray-400);font-weight:400;font-size:0.78em;">' + fmtMeses(g.meses) + '</span>'
+      + '<br><span style="color:var(--gray-400);font-weight:400;font-size:0.78em;">' + (g.etiqueta || fmtMeses(g.meses)) + '</span>'
       + '</span>')
     .join('');
 }
@@ -3273,7 +3354,8 @@ function prorratearPorPrecio(montoTotal, unidadesPaquete) {
 // Devuelve: { total, desglose: [{label, monto}] }
 function anticoMinPaquete(paquete) {
   const PCT = (params.antMinPct || 20) / 100;
-  // Cada parte se redondea a 1.000 (redondeo comercial, opción elegida 2026-06-24).
+  // Cada parte se redondea a 500 (round500; el comentario decía 1.000, que fue el redondeo
+  // original de 2026-06-24 y cambió a 500 por pedido — drift corregido 2026-10-29).
   // Mismo método que anticoDefaultPaquete → cuando antDefaultPct == antMinPct, default == mínimo
   // exactamente, sin banner espurio de "anticipo ajustado al mínimo".
   const partes = [];
@@ -3602,48 +3684,75 @@ function calcPlan240(u, anticipo, refuerzos, q) {
 //     CUOTA DE OBRA (regla confirmada por Fede 2026-08-19, reemplaza la derivación por R3 de
 //     index_83): resto = precioReferencia − anticipo − Σrefuerzos en obra; cuotaObra = resto / nTotal.
 //     Es decir, el resto se reparte parejo en TODO el plazo; en obra se pagan nObra de esas cuotas.
-//   - saldo a posesión = resto − cuotaObra × nObra = resto × nFin / nTotal
+//   - saldo a posesión = pRef − recaudObra. NO descuenta los refuerzos posteriores: todavía no
+//     se pagaron. Identidad verificada: saldo = cuotaObra × nFin + Σ refPost.
 //   - R3 (aportesMinPosesionPct) NO gobierna la cuota: se EVALÚA como en Edilia (evaluarR3 en
 //     render y solicitud: "no cumple aportes mín." + solicitud bloqueada). El vendedor corrige
-//     con anticipo/refuerzos/plazo.
+//     con anticipo/refuerzos/plazo. Cuenta SOLO obra — si los post entraran, el piso se volvería
+//     silenciosamente permisivo.
 //   - Financiación post-posesión SISTEMA ALEMÁN sobre nFin = nTotal − nObra meses:
-//       A = saldo / nFin = resto / nTotal = cuotaObra (la amortización post-posesión es igual
-//       a la cuota de obra); I_k = tasa × S_{k−1}; c_k = A + I_k (decreciente)
+//       A = cuotaObra = resto / nTotal; I_k = tasa × S_{k−1}; c_k = A + I_k (decreciente)
 //     tasa = params.tasaMensualSaldo (% mensual, param por proyecto; fija por contrato vía snapshot).
-//   - Fórmula cerrada de intereses (para validación externa a mano — invariante J4):
-//       totalIntereses = tasa × A × nFin × (nFin + 1) / 2
+//
+// ── REFUERZOS POSTERIORES A LA POSESIÓN (2026-10-29) ──
+// Terrazas pasa a un plan con obra de 14 meses y un refuerzo en el mes 24, o sea DIEZ MESES
+// DESPUÉS de la entrega. Hasta acá el motor los descartaba (normRefuerzos filtra mes > nObra).
+// Ahora se modelan, con tres cuidados:
+//   1. Son componente CONOCIDO del plan, no un prepago imprevisto: entran en `resto`, así que
+//      las cuotas se dimensionan netas de ellos. Si quedaran afuera, la cuota sale ~20 % más alta.
+//   2. `A` es `cuotaObra`, NO `saldo / nFin`. Con un refuerzo post, saldo = A·nFin + Σ refPost,
+//      así que saldo/nFin daría una amortización más alta: el cuadro tendría dos tramos de
+//      amortización y el saldo cerraría en negativo. El refuerzo es un ESCALÓN en su mes, no un
+//      cambio de pendiente.
+//   3. El interés del mes se calcula sobre el saldo de APERTURA, antes de aplicar el refuerzo.
+// Fórmula cerrada de intereses, generalizada (invariante J4; la vieja era el caso sin post):
+//   totalIntereses = tasa × [ A·nFin·(nFin+1)/2 + Σⱼ Rⱼ·(mesⱼ − nObra) ]
+// Verificada contra simulación completa en 405 combinaciones de nObra/nTotal/anticipo/tasa:
+// desvío máximo 8e-11, y el saldo cierra en 0 al mes nTotal.
+//
 // Firma idéntica a calcPlan60/120 (u, anticipo, refuerzos, q) más nTotal → entra en
 // calcPlanPaquete sin cambios (prorrateo por precioReferencia; el alemán es lineal: J7).
 // Sin literales numéricos: nObra y tasa vienen de params; nTotal es input.
 function calcPlanExtendido(u, anticipo, refuerzos, q, nTotal) {
   const nObra = params.nObraVigente;
   // nTotal: input del vendedor, acotado a (nObra, nTotalMax]. Sin nTotal → tope del proyecto.
+  // El piso comercial (N_TOTAL_MIN) NO se aplica acá: es regla del selector, no invariante del
+  // motor — los tests J ejercitan plazos más cortos a propósito.
   const nMax  = params.nTotalMax || (nObra + 1);
   const nTot  = Math.min(nMax, Math.max(nObra + 1, nTotal || nMax));
   const nFin  = nTot - nObra;
   const tasa  = (params.tasaMensualSaldo ?? 0) / 100;   // % mensual → fracción
   const pRef  = u.precioReferencia || 0;
   const ant   = anticipo || 0;
-  const refs  = normRefuerzos(refuerzos, q);            // solo mes ≤ nObra (corte inclusivo, R3)
+  // obra: mes ≤ nObra (corte inclusivo, R3) · post: nObra < mes ≤ nTotal
+  const part  = partirRefuerzos(refuerzos, q, nTot);
+  const refs  = part.obra;
+  const refPostArr = part.post;
   const refEnObra = refs.reduce((s, r) => s + (r.monto || 0), 0);
+  const refPost   = refPostArr.reduce((s, r) => s + (r.monto || 0), 0);
 
-  // Cuota de obra: el resto del precio repartido parejo en TODO el plazo (nTotal).
-  // R4 garantiza ant + refEnObra ≤ pRef (igualdad = plan 100 % integrado, resto 0).
-  const resto     = Math.max(0, pRef - ant - refEnObra);
+  // Cuota de obra: el resto del precio repartido parejo en TODO el plazo (nTotal). Los refuerzos
+  // posteriores se restan acá porque son parte conocida del plan (ver cabecera, punto 1).
+  // R4 garantiza ant + Σrefuerzos ≤ pRef (igualdad = plan 100 % integrado, resto 0).
+  const resto     = Math.max(0, pRef - ant - refEnObra - refPost);
   const cuotaObra = nTot > 0 ? resto / nTot : 0;
   const recaudObra = ant + refEnObra + cuotaObra * nObra;
-  const saldo = Math.max(0, pRef - recaudObra);            // = resto × nFin / nTot
+  const saldo = Math.max(0, pRef - recaudObra);            // = cuotaObra × nFin + refPost
   const degenerado = saldo <= 0.005;
 
-  // Cuadro de marcha (alemán)
-  const A = nFin > 0 ? saldo / nFin : 0;
+  // Cuadro de marcha (alemán, con escalón en el mes de cada refuerzo posterior)
+  const A = cuotaObra;
+  const refPostEnMes = (m) => refPostArr.filter(r => r.mes === m).reduce((s, r) => s + (r.monto || 0), 0);
   const cuadro = [];
   let S = saldo, totalIntereses = 0;
   for (let k = 1; k <= nFin; k++) {
-    const interes = tasa * S;
+    const mes = nObra + k;
+    const interes = tasa * S;          // sobre el saldo de APERTURA, antes del refuerzo del mes
     const cuota = A + interes;
-    const saldoFinal = S - A;
-    cuadro.push({ k, mes: nObra + k, saldoInicial: S, interes, amortizacion: A, cuota, saldoFinal });
+    const refMes = refPostEnMes(mes);
+    const saldoFinal = S - A - refMes;
+    cuadro.push({ k, mes, saldoInicial: S, interes, amortizacion: A, cuota, refuerzo: refMes,
+                  desembolso: cuota + refMes, saldoFinal });
     totalIntereses += interes;
     S = saldoFinal;
   }
@@ -3655,8 +3764,13 @@ function calcPlanExtendido(u, anticipo, refuerzos, q, nTotal) {
   return {
     tipo: 'ext', label: nTot + ' cuotas',
     edilia: false, esExtendido: true,
-    anticipo: ant, refuerzos: refs, qRefuerzos: refs.length,
-    totalRefuerzos: refEnObra, refEnObra,
+    // `refuerzos` lleva los de obra Y los posteriores: es lo que leen la celda de la comparativa,
+    // el cuadro de marcha y el snapshot de la solicitud, y el plan los incluye a todos.
+    // `refEnObra` y `totalRefuerzos` siguen contando SOLO obra (los lee evaluarR3 vía recaudObra
+    // y el balance del plan de referencia); `refPost` va aparte. Si un refuerzo posterior entrara
+    // en las dos vías —en `resto` y en el loop de amortización— se contaría dos veces.
+    anticipo: ant, refuerzos: refs.concat(refPostArr), qRefuerzos: refs.length + refPostArr.length,
+    totalRefuerzos: refEnObra, refEnObra, refPost, refuerzosPost: refPostArr,
     nObra, nTotal: nTot, nFin, nPost: nFin,
     cuotaObra, cuotaPost: cuotaPrimera,        // cuotaPost = primera cuota post (compat lectores)
     saldo, prestamo: saldo,
@@ -3736,19 +3850,30 @@ function planPorKey(key, opts) { return planesDelProyecto(opts).find(p => p.key 
 //   calcPlanPaquete(paquete, antTotal, refEscalar, q, planFn)         ← forma legacy (5 args)
 function calcPlanPaquete(paquete, anticipoTotal, refuerzosTotal, qOrPlanFn, maybePlanFn) {
   let refuerzosArr, planFn;
+  // 2026-10-29: acá NO se filtra por mes. Antes se llamaba a normRefuerzos, que descarta los
+  // refuerzos posteriores a la posesión — y con eso un paquete de Terrazas perdía el del mes 24
+  // antes de repartirlo entre las unidades. El filtro correcto es el de cada motor: los planes
+  // Edilia vuelven a llamar a normRefuerzos puertas adentro y los siguen ignorando, y el
+  // extendido los parte con partirRefuerzos. Acá solo se descarta lo inválido.
+  const soloValidos = (arr) => (Array.isArray(arr) ? arr : [])
+    .filter(r => r && r.monto != null && r.monto > 0 && r.mes != null);
   if (typeof qOrPlanFn === 'function') {            // forma nueva: (..., refuerzosArray, planFn)
-    refuerzosArr = normRefuerzos(refuerzosTotal, 0);
+    refuerzosArr = Array.isArray(refuerzosTotal) ? soloValidos(refuerzosTotal) : normRefuerzos(refuerzosTotal, 0);
     planFn = qOrPlanFn;
   } else {                                          // forma legacy: (..., refEscalar, q, planFn)
-    refuerzosArr = normRefuerzos(refuerzosTotal, qOrPlanFn);
+    refuerzosArr = Array.isArray(refuerzosTotal) ? soloValidos(refuerzosTotal) : normRefuerzos(refuerzosTotal, qOrPlanFn);
     planFn = maybePlanFn;
   }
   const todas = paquete.todas;
   const anticipos = prorratearPorPrecio(anticipoTotal, todas);
-  // Prorratear el monto de CADA refuerzo entre las unidades, conservando su mes.
-  const refuerzosProrr = refuerzosArr.map(r => ({ mes: r.mes, partes: prorratearPorPrecio(r.monto, todas) }));
+  // Prorratear el monto de CADA refuerzo entre las unidades, conservando su mes y su marca.
+  const refuerzosProrr = refuerzosArr.map(r => ({ mes: r.mes, esPosesion: r.esPosesion, partes: prorratearPorPrecio(r.monto, todas) }));
   const subPlanes = todas.map((u, i) => {
-    const refuerzosU = refuerzosProrr.map(pr => ({ monto: pr.partes[i], mes: pr.mes }));
+    const refuerzosU = refuerzosProrr.map(pr => {
+      const x = { monto: pr.partes[i], mes: pr.mes };
+      if (pr.esPosesion) x.esPosesion = true;
+      return x;
+    });
     // calcPlanCash ignora anticipo/refuerzos; los demás los usan
     const plan = planFn.length === 1
       ? planFn(u)
@@ -3778,21 +3903,28 @@ function calcPlanPaquete(paquete, anticipoTotal, refuerzosTotal, qOrPlanFn, mayb
 
   // Tipo y label vienen del primer subplan (todos comparten el mismo)
   const ref0 = subPlanes[0].plan;
+  // Qué refuerzos usó REALMENTE el motor. Cada motor decide: los Edilia descartan los
+  // posteriores a la posesión, el extendido los modela. En vez de duplicar esa regla acá,
+  // se leen los meses que el subplan devolvió y se filtran los del paquete con eso — así el
+  // nivel paquete nunca puede reportar un refuerzo que el cálculo ignoró, ni al revés.
+  const mesesUsados = new Set((ref0.refuerzos || []).map(r => r.mes));
+  const refuerzosUsados = refuerzosArr.filter(r => mesesUsados.has(r.mes));
   return {
     tipo:        ref0.tipo,
     label:       ref0.label,
     edilia:      ref0.edilia || false,
     nPost:       ref0.nPost || 0,
-    qRefuerzos:  refuerzosArr.length,
-    refuerzos:   refuerzosArr,   // array paquete-level [{monto, mes}] (montos totales del paquete)
+    qRefuerzos:  refuerzosUsados.length,
+    refuerzos:   refuerzosUsados,   // array paquete-level [{monto, mes}] (montos totales del paquete)
     // Agregados
     anticipo:    anticipoTotal,
     totalUSD:    sumTotalUSD,
     cuotaObra:   sumField('cuotaObra'),
     cuotaPost:   sumField('cuotaPost'),
-    refuerzo:    refuerzosArr.reduce((s, r) => s + (r.monto || 0), 0),  // legacy: Σ montos
+    refuerzo:    refuerzosUsados.reduce((s, r) => s + (r.monto || 0), 0),  // legacy: Σ montos
     totalRefuerzos: sumField('totalRefuerzos'),
     refEnObra:   sumField('refEnObra'),
+    refPost:     sumField('refPost'),
     recaudObra,
     recaudM2:    totalM2hom > 0 ? recaudObra / totalM2hom : 0,
     prestamo:    sumField('prestamo'),
@@ -3826,8 +3958,8 @@ function calcPlanPaquete(paquete, anticipoTotal, refuerzosTotal, qOrPlanFn, mayb
       cuadro: (() => {
         const n = ref0.nFin || 0; const out = [];
         for (let k = 0; k < n; k++) {
-          const row = { k: k + 1, mes: (ref0.nObra || 0) + k + 1, saldoInicial: 0, interes: 0, amortizacion: 0, cuota: 0, saldoFinal: 0 };
-          subPlanes.forEach(sp => { const r = (sp.plan.cuadro || [])[k]; if (r) { row.saldoInicial += r.saldoInicial; row.interes += r.interes; row.amortizacion += r.amortizacion; row.cuota += r.cuota; row.saldoFinal += r.saldoFinal; } });
+          const row = { k: k + 1, mes: (ref0.nObra || 0) + k + 1, saldoInicial: 0, interes: 0, amortizacion: 0, cuota: 0, refuerzo: 0, desembolso: 0, saldoFinal: 0 };
+          subPlanes.forEach(sp => { const r = (sp.plan.cuadro || [])[k]; if (r) { row.saldoInicial += r.saldoInicial; row.interes += r.interes; row.amortizacion += r.amortizacion; row.cuota += r.cuota; row.refuerzo += (r.refuerzo || 0); row.desembolso += (r.desembolso || r.cuota); row.saldoFinal += r.saldoFinal; } });
           out.push(row);
         }
         return out;
@@ -3931,6 +4063,30 @@ function leyendaRefuerzosTexto(enDocumento) {
     + (enDocumento ? ' en este documento' : '')
     + ' o el mes de posesión efectiva, lo que ocurra primero.';
 }
+// ¿Corresponde emitir esa leyenda? (2026-10-29)
+// NO en los proyectos que declaran `refuerzoPosesionAlHito`. La cláusula adelanta cualquier
+// refuerzo pendiente a la entrega, y ese modelo tiene un refuerzo DELIBERADAMENTE posterior a la
+// posesión (mes 24 contra obra de 14): la leyenda lo adelantaría diez meses y contradiría al
+// cuadro de marcha del mismo documento, en favor del desarrollador. Además, para el refuerzo de
+// posesión era un sustituto en prosa de algo que el dato ya dice: desde que se imprime
+// "Posesión" en vez de un mes, no tiene nada que corregir.
+// En Qiudad y Sensum se conserva sin cambios: ahí los meses siguen siendo literales y la
+// cláusula sigue siendo lo que fue a hacer — no entregar la unidad con refuerzos pendientes.
+// Las solicitudes ya firmadas conservan su texto congelado en documento.leyendaRefuerzos.
+function emiteLeyendaRefuerzos(cfg) {
+  return !((cfg || proyectoCfg() || {}).refuerzoPosesionAlHito);
+}
+// Leyenda de la marcha de cálculo de cuotas (minuta y solicitud). Texto por proyecto en la
+// config; `{tasa}` se reemplaza con la tasa del PLAN, no con params.tasaMensualSaldo: la
+// solicitud reimpresa reconstruye el cuadro desde la tasa congelada, así que leerla del plan es
+// lo único que garantiza que el texto y los números del documento no se puedan separar.
+// Los proyectos que no declaran el campo no emiten nada y su documento queda idéntico al byte.
+function leyendaInteresesTexto(plan, cfg) {
+  const txt = ((cfg || proyectoCfg() || {}).leyendaIntereses || '');
+  if (!txt) return '';
+  const tasa = (plan && plan.tasaMensualSaldo != null) ? plan.tasaMensualSaldo : (params.tasaMensualSaldo ?? 0);
+  return txt.replace('{tasa}', fmt(tasa, 2));
+}
 // Detalle de superficies de una unidad según las superficies DECLARADAS por el proyecto
 // (cfg.superficies), no un set fijo de Qiudad: Sensum muestra su terraza, Terrazas su descubierto.
 // Etiqueta = nombre de columna del Excel sin el prefijo "m2 ". Devuelve { detalle, total }.
@@ -3956,59 +4112,84 @@ function detalleSuperficieUnidad(u, cfg) {
 // firma: anticipo (mes 0), cuotas de obra + refuerzos en su mes (1..nObra), y la financiación
 // post-posesión (sistema alemán: interés + amortización). Lee plan.cuadro / plan.refuerzos /
 // plan.cuotaObra del paquete (J7: el paquete es la suma) — NO recalcula el motor.
-function cuadroMarchaHTML(plan) {
+function cuadroMarchaHTML(plan, opts) {
   if (!plan || !Array.isArray(plan.cuadro) || plan.degenerado) return '';
-  const f = (v) => fmtUSD(v);
+  // ── LIBRO ENTERO (2026-10-29) ──
+  // El cuadro mezclaba dos mundos: imprimía la cuota redondeada (`f(cuotaObra)`) mientras el
+  // acumulado avanzaba con el valor EXACTO. A los catorce meses de obra el acumulado ya estaba
+  // varios dólares arriba de lo que sumaban las celdas impresas, y la deriva crecía fila a fila:
+  // el cliente sumaba la columna y no le daba. La tabla estaba en desacuerdo consigo misma.
+  // Ahora: cada monto se redondea UNA vez, los que se repiten (cuota de obra y amortización, que
+  // son el mismo número) se redondean una sola vez y se reutilizan, el acumulado suma LO IMPRESO
+  // y los totales son la suma aritmética de cada columna impresa. Todo cierra por construcción.
+  // El motor queda exacto: esto es capa de presentación. La diferencia que queda entre el capital
+  // que suma el cuadro y el precio del titular es el residuo del redondeo —unos pocos dólares,
+  // ~0,02 %— y va declarada en la nota al pie en vez de repartirse como deriva dentro de la tabla.
+  const ent = (v) => Math.round(v || 0);
+  const f = (v) => fmtUSD(v);          // recibe siempre enteros; el redondeo ya se hizo arriba
   const nObra = plan.nObra || 0;
   const refs = Array.isArray(plan.refuerzos) ? plan.refuerzos : [];
-  const refEnMes = (m) => refs.filter(r => r.mes === m).reduce((a, r) => a + (r.monto || 0), 0);
+  const refEnMes = (m) => refs.filter(r => r.mes === m).reduce((a, r) => a + ent(r.monto), 0);
+  const cuotaVista = ent(plan.cuotaObra);   // la misma en los nTotal meses, obra y tenencia
   const filas = [];
-  let acum = 0;
+  let acum = 0, sumRef = 0, sumI = 0;
   // Mes 0: anticipo
-  acum += plan.anticipo || 0;
-  filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td>${f(plan.anticipo || 0)}</td><td></td><td></td><td></td><td><strong>${f(plan.anticipo || 0)}</strong></td><td>${f(acum)}</td></tr>`);
+  const antVista = ent(plan.anticipo);
+  acum += antVista;
+  // El anticipo NO va en la columna "Cuota obra": no es una cuota de obra y su total no lo
+  // incluía, así que sumar esa columna daba 28.500 de más. Va solo en Pago del mes, que es lo
+  // que el cliente paga ese mes, y la etapa lo nombra.
+  filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td></td><td><strong>${f(antVista)}</strong></td><td>${f(acum)}</td></tr>`);
   // Obra — comprimida (Fede 2026-08-19, 2ª iteración): períodos de cuotas de obra con el MISMO
   // pago, cortados en cada mes con refuerzo (inclusive) y en la posesión. Fila del período:
   // "Meses a–b · cuotas de obra", Pago del mes = la cuota (lo que paga cada mes). Fila aparte
   // para el refuerzo de ese mes (y la posesión), con el total del mes. Acumulado al cierre de cada fila.
-  const cuotaObra = plan.cuotaObra || 0;
   let m = 1;
   while (m <= nObra) {
     let fin = m;
     while (fin < nObra && !refEnMes(fin)) fin++;   // hasta el próximo mes con refuerzo o la posesión (inclusive)
     const n = fin - m + 1;
-    acum += cuotaObra * n;
-    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td></td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
+    acum += cuotaVista * n;
+    filas.push(`<tr><td>${n > 1 ? m + '–' + fin : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + fin : 'cuota ' + m}</td><td>${f(cuotaVista)}</td><td></td><td></td><td></td><td><strong>${f(cuotaVista)}</strong></td><td>${f(acum)}</td></tr>`);
     const ref = refEnMes(fin);
     const esPos = fin === nObra;
     if (ref || esPos) {
-      acum += ref;
+      acum += ref; sumRef += ref;
       const etiqueta = esPos ? (ref ? 'Posesión · refuerzo' : 'Posesión') : 'Refuerzo';
-      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td></td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaObra + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
+      filas.push(`<tr class="minuta-row-hito"><td>${fin}</td><td>${etiqueta}</td><td></td><td>${ref ? f(ref) : ''}</td><td></td><td></td><td>${ref ? `<strong>+ ${f(ref)}</strong> <span style="font-weight:400;">· total del mes ${f(cuotaVista + ref)}</span>` : ''}</td><td>${f(acum)}</td></tr>`);
     }
     m = fin + 1;
   }
-  // Financiación
+  // Financiación. El loop ahora dibuja también los refuerzos POSTERIORES a la posesión: antes
+  // ignoraba `plan.refuerzos` por completo, así que un refuerzo del mes 24 era invisible en el
+  // documento aunque el motor lo calculara bien. La fila muestra el desembolso REAL del mes
+  // (cuota + refuerzo + interés), que es lo que el cliente va a transferir.
   plan.cuadro.forEach(r => {
-    acum += r.cuota;
-    filas.push(`<tr><td>${r.mes}</td><td>Cuota en tenencia</td><td></td><td></td><td>${f(r.interes)}</td><td>${f(r.amortizacion)}</td><td><strong>${f(r.cuota)}</strong></td><td>${f(acum)}</td></tr>`);
+    const iV = ent(r.interes), rV = ent(r.refuerzo || 0);
+    const pago = cuotaVista + iV + rV;
+    acum += pago; sumI += iV; sumRef += rV;
+    const etiqueta = rV ? 'Cuota en tenencia · refuerzo' : 'Cuota en tenencia';
+    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td></td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(cuotaVista)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
   });
-  const sumI = plan.cuadro.reduce((a, r) => a + r.interes, 0);
-  const sumA = plan.cuadro.reduce((a, r) => a + r.amortizacion, 0);
-  const sumRef = refs.reduce((a, r) => a + (r.monto || 0), 0);
-  const sumObra = (plan.cuotaObra || 0) * nObra;
+  // Totales = suma aritmética de lo impreso en cada columna. El capital queda repartido entre
+  // Cuota obra, Refuerzo y Amortización, y las tres suman el precio: los refuerzos posteriores
+  // a la posesión son capital y viven en su columna, no se duplican en Amortización.
+  const sumObra = cuotaVista * nObra;
+  const sumA = cuotaVista * (plan.nFin || 0);
+  const leyenda = (opts && opts.leyendaIntereses) || '';
   return `
       <div class="minuta-seccion minuta-cuadro-marcha">
         <div class="minuta-seccion-titulo">Plan de pago completo — ${plan.nTotal} cuotas
-          <span class="minuta-seccion-sub">Anticipo en la firma · ${nObra} cuotas de obra (con refuerzos en su mes) · ${plan.nFin} cuotas en tenencia desde la posesión sobre un saldo de ${f(plan.saldo)} al ${fmt(plan.tasaMensualSaldo, 2)} % mensual (sistema alemán, cuota decreciente). Valores en USD.</span>
+          <span class="minuta-seccion-sub">Anticipo en la firma · ${plan.nTotal} cuotas de capital iguales, las primeras ${nObra} durante la obra y las restantes ${plan.nFin} en tenencia · los refuerzos se pagan en su mes, incluidos los posteriores a la posesión · sobre el saldo pendiente desde la posesión se devenga un ${fmt(plan.tasaMensualSaldo, 2)} % mensual, que se paga y no se capitaliza. El ejemplo supone una entrega estimada al mes ${nObra}. Valores en USD.</span>
         </div>
         <table class="minuta-tabla minuta-tabla-cuadro">
           <thead><tr><th>Mes</th><th>Etapa</th><th>Cuota obra</th><th>Refuerzo</th><th>Interés</th><th>Amortización</th><th>Pago del mes</th><th>Acumulado</th></tr></thead>
           <tbody>${filas.join('')}
-            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumObra)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(plan.totalUSD)}</td></tr>
+            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumObra)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
           </tbody>
         </table>
-        <div class="minuta-cuadro-nota">Pago del mes = lo que se paga cada mes del período (obra: la cuota de obra; tenencia: interés + amortización). Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila; el final coincide con el total del plan (precio + intereses).</div>
+        <div class="minuta-cuadro-nota">Pago del mes = lo que se paga cada mes del período (obra: la cuota de capital; tenencia: capital + interés, más el refuerzo si lo hay). Los refuerzos y la posesión van en fila propia, con el total de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
+        ${leyenda ? `<div class="minuta-cuadro-nota">${leyenda}</div>` : ''}
       </div>`;
 }
 
@@ -4184,7 +4365,11 @@ function generarMinuta() {
   // Armar HTML de la minuta
   // Cuadro de marcha (Bloque C): solo proyectos con plan extendido (no-Edilia)
   const planExt = planes.find(p => p.grupo === 'ext');
-  const cuadroMarcha = (!proyectoCfg().usaEdilia && planExt) ? cuadroMarchaHTML(planExt.data) : '';
+  // La leyenda de intereses se resuelve contra el PLAN (su tasa), no contra params: ver
+  // leyendaInteresesTexto. Los proyectos que no declaran el campo no emiten nada.
+  const cuadroMarcha = (!proyectoCfg().usaEdilia && planExt)
+    ? cuadroMarchaHTML(planExt.data, { leyendaIntereses: leyendaInteresesTexto(planExt.data) })
+    : '';
 
   const html = `
     <div class="minuta-page">
@@ -4252,7 +4437,7 @@ function generarMinuta() {
           </thead>
           ${filasConGIA}
         </table>`}
-        ${refuerzosNorm.length > 0 ? `<div style="font-size:9pt;color:#555;margin-top:6px;">${leyendaRefuerzosTexto(true)}</div>` : ''}
+        ${(emiteLeyendaRefuerzos() && refuerzosNorm.length > 0) ? `<div style="font-size:9pt;color:#555;margin-top:6px;">${leyendaRefuerzosTexto(true)}</div>` : ''}
       </div>
       ${cuadroMarcha}
       ${pieDesarrollador()}
@@ -4610,7 +4795,15 @@ async function _persistirYImprimirSolicitud(datos) {
     moneda: esEdilia ? 'ARS' : 'USD',
     anticipoUSD:   plan.anticipo   || 0,
     // Refuerzos como lista [{monto (USD), mes}]. Mes literal congelado (no se recalcula).
-    refuerzos:     (plan.refuerzos || []).map(r => ({ monto: r.monto || 0, mes: r.mes })),
+    // `esPosesion` viaja también: es lo que hace que la reimpresión diga "Posesión" donde el
+    // papel original decía "Posesión". Sin la marca, una solicitud nueva de Terrazas se
+    // reimprimiría con el mes numérico y el documento reimpreso no sería el que se firmó.
+    // Las solicitudes viejas no la traen y siguen imprimiendo su mes literal, que es correcto.
+    refuerzos:     (plan.refuerzos || []).map(r => {
+      const x = { monto: r.monto || 0, mes: r.mes };
+      if (r.esPosesion) x.esPosesion = true;
+      return x;
+    }),
     // Legacy (lectura de PDFs/bandeja viejos sigue funcionando; útil para grilla XLSX):
     refuerzoUSD:   (plan.refuerzos && plan.refuerzos[0]) ? plan.refuerzos[0].monto : 0,
     qRefuerzos:    (plan.refuerzos || []).length,
@@ -4675,9 +4868,13 @@ async function _persistirYImprimirSolicitud(datos) {
       return {
         detalleSuperficie: sup.detalle,
         m2total: sup.total,
-        leyendaRefuerzos: (planSnapshot.refuerzos || []).length > 0
+        leyendaRefuerzos: (emiteLeyendaRefuerzos() && (planSnapshot.refuerzos || []).length > 0)
           ? leyendaRefuerzosTexto(true)
           : null,
+        // Leyenda de la marcha de cálculo de cuotas, congelada igual que la anterior: si mañana
+        // cambia la redacción o la tasa del proyecto, la solicitud firmada conserva la suya.
+        // Null en los proyectos que no declaran el campo (no cambia nada de su documento).
+        leyendaIntereses: plan.esExtendido ? (leyendaInteresesTexto(plan) || null) : null,
         // index_93: QUÉ complementos concretos entraron en el precio. Congelado como el
         // resto: el tipo y la descripción pueden cambiar en el inventario después de firmar.
         // Con esto la solicitud queda trazable a UF — antes solo guardaba la principal.
@@ -4809,21 +5006,31 @@ function generarSolicitudReservaPDF(docData) {
   let paginaPlanCompleto = '';
   if (plan.esExtendido && !plan.degeneradoSnapshot) {
     const nFin = plan.nFin || 0, tasa = (plan.tasaMensualSaldo || 0) / 100, A = plan.amortizacionUSD || 0;
+    const refsSnap = plan.refuerzos || [];
+    const nObraSnap = plan.nObra || 0;
+    // Refuerzos posteriores a la posesión: bajan el saldo en su mes, DESPUÉS de devengar el
+    // interés de ese mes. Reconstrucción determinística desde el snapshot, igual que el resto.
+    const refPostEnMes = (mes) => refsSnap
+      .filter(r => r.mes > nObraSnap && r.mes === mes)
+      .reduce((s, r) => s + (r.monto || 0), 0);
     let S = plan.saldoFinanciadoUSD || 0; const cuadro = [];
     for (let k = 1; k <= nFin; k++) {
-      const I = S * tasa; const c = A + I; const Sf = Math.max(0, S - A);
-      cuadro.push({ k, mes: (plan.nObra || 0) + k, saldoInicial: S, interes: I, amortizacion: A, cuota: c, saldoFinal: Sf });
+      const mes = nObraSnap + k;
+      const I = S * tasa; const c = A + I; const rp = refPostEnMes(mes);
+      const Sf = Math.max(0, S - A - rp);
+      cuadro.push({ k, mes, saldoInicial: S, interes: I, amortizacion: A, cuota: c,
+                    refuerzo: rp, desembolso: c + rp, saldoFinal: Sf });
       S = Sf;
     }
     const planParaCuadro = {
       cuadro, degenerado: false,
       nObra: plan.nObra, nTotal: plan.nTotal, nFin: plan.nFin,
       tasaMensualSaldo: plan.tasaMensualSaldo,
-      anticipo: plan.anticipoUSD, refuerzos: plan.refuerzos || [],
+      anticipo: plan.anticipoUSD, refuerzos: refsSnap,
       cuotaObra: plan.cuotaObraUSD, saldo: plan.saldoFinanciadoUSD, totalUSD: plan.totalUSD,
     };
     paginaPlanCompleto = `
-      ${cuadroMarchaHTML(planParaCuadro)}
+      ${cuadroMarchaHTML(planParaCuadro, { leyendaIntereses: doc.leyendaIntereses || '' })}
       ${bloqueFirmas}`;
   }
 
@@ -5725,6 +5932,12 @@ function renderCotizador(u) {
         <div class="form-group" style="margin:0;">
           <label>Refuerzos (USD)</label>
           <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+            ${/* 2026-10-29: el vendedor edita MONTOS, no la estructura del plan. El mes pasa a
+                  texto y se fueron el ✕ y "+ Agregar refuerzo". La cantidad de refuerzos y sus
+                  meses son decisión de la empresa y viven en params.refuerzosDefault, editable
+                  solo desde el panel de admin; lo que se negocia en cada operación es cuánto.
+                  Con esto construirRefuerzosDefault queda como ÚNICA vía por la que un mes entra
+                  a una cotización, que es lo que hace confiable la marca de posesión. */''}
             ${(planState.refuerzos || []).length === 0
               ? '<div style="font-size:12px;color:var(--gray-500);padding:6px 0;">Sin refuerzos</div>'
               : (planState.refuerzos || []).map((r, i) => `
@@ -5732,23 +5945,14 @@ function renderCotizador(u) {
                 <input type="number" value="${Math.round(r.monto || 0)}" min="0" step="500"
                   onchange="setRefuerzoMonto(${i}, this.value)"
                   style="flex:1;padding:7px 10px;border:1.5px solid var(--gray-300);border-radius:6px;font-family:'DM Mono',monospace;font-size:13px;">
-                <span style="font-size:11px;color:var(--gray-500);">mes</span>
-                <input type="number" value="${r.mes}" min="1" max="${params.nObraVigente}" step="1"
-                  onchange="setRefuerzoMes(${i}, this.value)"
-                  style="width:60px;padding:7px 8px;border:1.5px solid var(--gray-300);border-radius:6px;font-family:'DM Mono',monospace;font-size:13px;text-align:center;">
-                <button onclick="removeRefuerzo(${i})" title="Quitar refuerzo"
-                  style="padding:6px 9px;border:1.5px solid var(--gray-300);border-radius:6px;background:white;color:var(--gray-500);cursor:pointer;font-size:13px;">✕</button>
+                <span style="font-size:11px;color:var(--gray-500);min-width:72px;">${etiquetaMesRefuerzo(r)}</span>
               </div>`).join('')}
           </div>
-          <button onclick="addRefuerzo()"
-            style="margin-top:8px;padding:6px 12px;border:1.5px dashed var(--gray-300);border-radius:6px;background:white;color:var(--brand-dark);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;">
-            + Agregar refuerzo
-          </button>
           <button onclick="resetearPlanDefault()" title="Reponer anticipo y refuerzos del plan inicial sobre el paquete actual"
             style="margin-top:10px;padding:6px 12px;border:1.5px solid var(--gray-300);border-radius:6px;background:white;color:var(--gray-600);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;">
             ↺ Volver a opción inicial
           </button>
-          ${normRefuerzos(planState.refuerzos || [], 0).length > 0 ? `
+          ${(emiteLeyendaRefuerzos() && normRefuerzos(planState.refuerzos || [], 0).length > 0) ? `
           <div style="font-size:11px;color:var(--gray-500);margin-top:10px;">${leyendaRefuerzosTexto(false)}</div>` : ''}
         </div>
         ${!usaEdiliaAct ? `
@@ -5757,11 +5961,18 @@ function renderCotizador(u) {
           <select id="select-ntotal" onchange="onNTotalChange(this.value)" style="width:100%;">
             ${(() => {
               const nO = params.nObraVigente, nM = params.nTotalMax || (nO + 1);
-              const nSel = Math.min(nM, Math.max(nO + 1, planState.nTotal || nM));
+              // Piso del plazo (2026-10-29): max(N_TOTAL_MIN, nObra + PASO). La duración mínima
+              // de un plan es 36 cuotas, igual para todos los proyectos, y nunca se ofrece un
+              // plan más corto que la obra. Con obra de 36 (Sensum) el piso sigue dando 42 y el
+              // selector no cambia; con obra de 14 (Terrazas) arranca en 36, que además es lo que
+              // garantiza que un refuerzo en el mes 24 siempre entre en el plan.
+              const piso = Math.max(N_TOTAL_MIN, nO + PASO_PLAZOS);
+              const nSel = Math.min(nM, Math.max(piso, planState.nTotal || nM));
               const opciones = [];
-              // Opciones cada 6 meses desde nObra+6 hasta nTotalMax, más nTotalMax si no cae en la grilla
-              for (let n = nO + 6; n < nM; n += 6) opciones.push(n);
-              opciones.push(nM);
+              // Múltiplos de PASO_PLAZOS desde el piso, no nObra + 6k: con nObra 14 esa fórmula
+              // daría 38, 44, 50; se quieren los redondos 36, 42, 48 como hasta ahora.
+              for (let n = piso; n < nM; n += PASO_PLAZOS) opciones.push(n);
+              if (opciones[opciones.length - 1] !== nM) opciones.push(nM);
               return opciones.map(n => `<option value="${n}" ${n === nSel ? 'selected' : ''}>${n} cuotas (${nO} en obra + ${n - nO} financiadas)</option>`).join('');
             })()}
           </select>
@@ -6400,7 +6611,15 @@ function onAnticipoChange(value) {
 }
 
 // ── Edición de refuerzos (lista independiente) ──
-// Monto: editable por todos (vendedor + admin). Mes / agregar / quitar: solo admin.
+// Monto: editable por todos (vendedor y admin; nunca hubo gate de rol acá, pese a lo que decía
+// el comentario anterior y el contexto — drift corregido 2026-10-29).
+// Mes, agregar y quitar: ya NO se editan desde el cotizador. La estructura del plan (cuántos
+// refuerzos y en qué mes) es de la empresa y vive en params.refuerzosDefault, editable solo
+// desde el panel de Parámetros; en cada operación se negocia el monto. Tampoco se gatea por rol:
+// un admin no puede emitir una solicitud siendo admin —tiene que pasar a Visión vendedor, donde
+// el gate lo dejaría sin el control justo cuando lo usaría—, así que su camino es el panel.
+// setRefuerzoMes / addRefuerzo / removeRefuerzo quedan SIN LLAMADORES. No se borran: el toggle
+// de "en mes de posesión" del panel es el primer paso de una edición de estructura más completa.
 function setRefuerzoMonto(i, value) {
   if (!planState.refuerzos || !planState.refuerzos[i]) return;
   planState.refuerzos[i].monto = parseFloat(value) || 0;
@@ -6981,20 +7200,33 @@ function leerParametrosDeUI() {
   });
   params.umbralObraM2 = parseFloat(document.getElementById('p-umbral-obra').value) || 1500;
   params.nObraVigente = parseInt(document.getElementById('p-n-obra-vigente').value) || 36;
+  // El tope no puede quedar por debajo del piso del selector (2026-10-29): si lo hiciera, el
+  // vendedor vería ofrecido un plan más corto que la duración mínima declarada.
   { const el = document.getElementById('p-ntotal-max'); const v = el ? parseInt(el.value) : NaN;
-    if (isFinite(v)) params.nTotalMax = Math.max((params.nObraVigente || 0) + 1, v); }
+    if (isFinite(v)) params.nTotalMax = Math.max((params.nObraVigente || 0) + 1, N_TOTAL_MIN, v); }
   { const el = document.getElementById('p-tasa-mensual-saldo'); const v = el ? parseFloat(el.value) : NaN;
     if (isFinite(v)) params.tasaMensualSaldo = Math.max(0, v); }
   params.descMax     = parseFloat(document.getElementById('p-desc-max').value) || 30;
   params.tierra      = parseFloat(document.getElementById('p-tierra').value) || 15;
   params.giaPct      = parseFloat(document.getElementById('p-gia-pct').value) || 4;
 
-  // Refuerzos precargados: leer el pct editable de cada fila (mes se conserva del param).
+  // Refuerzos precargados: pct, mes y la marca de posesión (2026-10-29).
+  // El radio es excluyente por `name`, así que a lo sumo una fila vuelve con mes 'posesion';
+  // igual se fuerza acá por si el DOM llegara en un estado raro (import, restauración).
   if (Array.isArray(params.refuerzosDefault)) {
+    const nMaxRef = params.nTotalMax || 60;
+    let yaHayPosesion = false;
     params.refuerzosDefault = params.refuerzosDefault.map((r, i) => {
-      const el = document.getElementById('p-refdef-pct-' + i);
-      const pct = el ? (parseFloat(el.value) || 0) : (r.pct || 0);
-      return { pct, mes: r.mes };
+      const elPct = document.getElementById('p-refdef-pct-' + i);
+      const elMes = document.getElementById('p-refdef-mes-' + i);
+      const elPos = document.getElementById('p-refdef-pos-' + i);
+      const pct = elPct ? (parseFloat(elPct.value) || 0) : (r.pct || 0);
+      const esPos = elPos ? elPos.checked : (r.mes === 'posesion');
+      if (esPos && !yaHayPosesion) { yaHayPosesion = true; return { pct, mes: 'posesion' }; }
+      let mes = elMes ? parseInt(elMes.value, 10) : (r.mes === 'posesion' ? (params.nObraVigente ?? 36) : r.mes);
+      if (!isFinite(mes) || mes < 1) mes = 1;
+      if (mes > nMaxRef) mes = nMaxRef;
+      return { pct, mes };
     });
   }
 
@@ -7103,20 +7335,55 @@ function cargarParametrosEnUI() {
   setCheck('p-plan-180c', pv['180c'] ?? false);
   setCheck('p-plan-240c', pv['240c'] ?? false);
 
-  // Refuerzos precargados: una fila por refuerzo con pct editable + mes (read-only acá).
+  // Refuerzos precargados: una fila por refuerzo con pct Y mes editables, más un radio para
+  // marcar cuál está atado a la posesión (2026-10-29). El mes era read-only, así que mover un
+  // refuerzo exigía deploy o editar Firestore a mano; y desde que el cotizador dejó de permitir
+  // cambiarlo, éste pasó a ser el único lugar donde la estructura del plan se define.
+  // El radio es EXCLUYENTE —una sola fila puede ser la de posesión— y por eso comparten `name`.
+  // El mes numérico se acota a nTotalMax: un refuerzo fuera del plazo máximo no entraría en
+  // ningún plan y se descartaría en silencio.
+  renderFilasRefuerzosDefault();
+}
+
+// Dibuja las filas de refuerzos precargados del panel. Separada de cargarParametrosEnUI porque
+// el radio de posesión tiene que poder redibujar SOLO este bloque: al tildarlo, el input de mes
+// de esa fila pasa a deshabilitado, y volver a correr el panel entero robaría el foco de
+// cualquier campo que el admin estuviera tipeando.
+function renderFilasRefuerzosDefault() {
   const contRef = document.getElementById('p-refuerzos-default');
   if (contRef) {
     const defs = Array.isArray(params.refuerzosDefault) ? params.refuerzosDefault : [];
+    const nMaxRef = params.nTotalMax || 60;
     contRef.innerHTML = defs.length === 0
       ? '<div style="font-size:12px;color:var(--gray-500);">Sin refuerzos precargados.</div>'
       : defs.map((r, i) => {
-          const mesLabel = r.mes === 'posesion' ? 'posesión (mes ' + (params.nObraVigente ?? 36) + ')' : 'mes ' + r.mes;
-          return '<div style="display:flex;gap:8px;align-items:center;">' +
+          const esPos = r.mes === 'posesion';
+          // La fila de posesión NO muestra mes: el param es literalmente `mes: 'posesion'` y no
+          // hay número que conservar. El input queda oculto (con nObraVigente como punto de
+          // partida por si se destilda) para que la fila se lea "10 % · en mes de posesión" y no
+          // contradiga al documento, que para ese refuerzo tampoco imprime un mes.
+          const mesNum = esPos ? (params.nObraVigente ?? 36) : r.mes;
+          return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
             '<input type="number" id="p-refdef-pct-' + i + '" class="mono" value="' + (r.pct || 0) + '" step="1" min="0" ' +
-            'oninput="leerParametrosDeUI()" style="width:80px;">' +
-            '<span style="font-size:12px;color:var(--gray-600);">% · ' + mesLabel + '</span></div>';
+            'oninput="leerParametrosDeUI()" style="width:70px;">' +
+            '<span style="font-size:12px;color:var(--gray-600);">%</span>' +
+            '<span style="font-size:12px;color:var(--gray-600);' + (esPos ? 'display:none;' : '') + '">· mes</span>' +
+            '<input type="number" id="p-refdef-mes-' + i + '" class="mono" value="' + mesNum + '" step="1" min="1" max="' + nMaxRef + '" ' +
+            (esPos ? 'disabled style="display:none;" ' : 'style="width:64px;" ') + 'oninput="leerParametrosDeUI()">' +
+            '<label style="font-size:12px;color:var(--gray-600);display:inline-flex;align-items:center;gap:4px;cursor:pointer;">' +
+            '<input type="radio" name="p-refdef-pos" id="p-refdef-pos-' + i + '" ' + (esPos ? 'checked ' : '') +
+            'onchange="onRefDefPosesionChange()"> en mes de posesión</label>' +
+            '</div>';
         }).join('');
   }
+}
+
+// Cambio del radio de posesión: leer el panel (que ya resuelve la exclusividad) y redibujar las
+// filas para que el input de mes de la fila marcada quede deshabilitado y el de la anterior se
+// vuelva a habilitar.
+function onRefDefPosesionChange() {
+  leerParametrosDeUI();
+  renderFilasRefuerzosDefault();
 }
 
 // Guardar anticipo Edilia desde input USD
@@ -9662,6 +9929,26 @@ document.addEventListener('DOMContentLoaded', () => {
       if (p2.aportesMinPosesionPct !== 100) errores.push('migrarParams clamp 100');
       const p3 = migrarParams({ aportesMinPosesionPct: 10, integracionMinPct: 50 });
       if (p3.aportesMinPosesionPct !== 10) errores.push('migrarParams NO debe elevar R3 a integracionMinPct');
+      // ── R3 cuenta SOLO obra, también con refuerzos posteriores a la posesión (2026-10-29) ──
+      // El invariante declarado es "solo mes ≤ nObra, corte inclusivo". Desde que el motor
+      // modela refuerzos post, dejarlos entrar acá volvería a aportesMinPosesionPct
+      // silenciosamente permisivo: el piso se cumpliría con plata que todavía no se aportó a la
+      // posesión. El corte sigue siendo inclusivo (el pago en posesión cuenta).
+      {
+        const bk2 = { nO: params.nObraVigente, nM: params.nTotalMax, t: params.tasaMensualSaldo };
+        try {
+          params.nObraVigente = 14; params.nTotalMax = 60; params.tasaMensualSaldo = 1;
+          const refsMix = [{ monto: 14000, mes: 12 }, { monto: 14000, mes: 14 }, { monto: 14000, mes: 24 }];
+          const pExt = calcPlanExtendido(u, 28000, refsMix, 0, 60);
+          // el de mes 14 (posesión) SÍ cuenta — corte inclusivo; el de mes 24 NO
+          if (!aprox(pExt.refEnObra, 28000, TOL_USD)) errores.push(`R3 obra: refEnObra ${pExt.refEnObra} ≠ 28000 (12 + 14, corte inclusivo)`);
+          if (!aprox(pExt.refPost, 14000, TOL_USD)) errores.push(`R3 obra: refPost ${pExt.refPost} ≠ 14000`);
+          const esperado = pExt.anticipo + pExt.refEnObra + pExt.cuotaObra * pExt.nObra;
+          const r3 = evaluarR3(pExt, 100000);
+          if (!aprox(r3.aportado, esperado, TOL_USD)) errores.push('R3 aportado incluye el refuerzo posterior a la posesión');
+          if (!aprox(pExt.totalRefuerzos, pExt.refEnObra, TOL_USD)) errores.push('totalRefuerzos debe contar solo obra');
+        } finally { params.nObraVigente = bk2.nO; params.nTotalMax = bk2.nM; params.tasaMensualSaldo = bk2.t; }
+      }
     } finally { params.aportesMinPosesionPct = bk.a; params.nObraVigente = bk.n; }
     return errores.length === 0 ? true : errores.slice(0, 4).join(' | ');
   });
@@ -9677,15 +9964,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const U_SEN = () => ({ codigo: 'UF H101', tipo: 'Departamento', categoria: 'Principal', m2cub: 49.6, m2semi: 22.8, m2terraza: 0, m2subsuelo: 0, m2hom: 61, precioReferencia: 140220, precioCash: 133209, estado: 'disponible' });
   const U_SEN2 = () => ({ codigo: 'UF H404', tipo: 'Departamento', categoria: 'Principal', m2cub: 128.9, m2semi: 32.7, m2terraza: 59.8, m2subsuelo: 0, m2hom: 175.15, precioReferencia: 429900, precioCash: 408405, estado: 'disponible' });
 
-  test('J1', 1, 'Extendido — balance: anticipo + refuerzos + cuotaObra×nObra + Σ amortización = precioReferencia', () => conParamsSensum(() => {
+  test('J1', 1, 'Extendido — balance: anticipo + refuerzos (obra y post) + cuotaObra×nObra + Σ amortización = precioReferencia', () => conParamsSensum(() => {
     const errores = [];
-    for (const u of [U_SEN(), U_SEN2()]) for (const nT of [48, 60]) for (const ant of [0.20, 0.35]) for (const refs of [[], [{ monto: 10000, mes: 12 }, { monto: 10000, mes: 24 }]]) {
-      const p = calcPlanExtendido(u, Math.round(u.precioReferencia * ant), refs, 0, nT);
-      const sumA = p.cuadro.reduce((s, r) => s + r.amortizacion, 0);
-      const bal = p.anticipo + p.refEnObra + p.cuotaObra * p.nObra + sumA;
-      if (!aprox(bal, u.precioReferencia, TOL_USD)) errores.push(`${u.codigo} n=${nT} ant=${ant}: balance ${bal.toFixed(2)} ≠ ${u.precioReferencia}`);
-      if (p.nObra !== 36 || p.nTotal !== nT || p.nFin !== nT - 36) errores.push(`${u.codigo}: nObra/nTotal/nFin ${p.nObra}/${p.nTotal}/${p.nFin}`);
-    }
+    // 2026-10-29: el balance suma ahora `refPost`. Los refuerzos posteriores a la posesión son
+    // capital del plan: si quedaran afuera de esta identidad, el cuadro no cerraría en el precio.
+    for (const u of [U_SEN(), U_SEN2()]) for (const nT of [48, 60]) for (const ant of [0.20, 0.35])
+      for (const refs of [[], [{ monto: 10000, mes: 12 }, { monto: 10000, mes: 24 }],
+                          [{ monto: 10000, mes: 12 }, { monto: 10000, mes: 42 }]]) {
+        const p = calcPlanExtendido(u, Math.round(u.precioReferencia * ant), refs, 0, nT);
+        const sumA = p.cuadro.reduce((s, r) => s + r.amortizacion, 0);
+        const bal = p.anticipo + p.refEnObra + p.refPost + p.cuotaObra * p.nObra + sumA;
+        if (!aprox(bal, u.precioReferencia, TOL_USD)) errores.push(`${u.codigo} n=${nT} ant=${ant}: balance ${bal.toFixed(2)} ≠ ${u.precioReferencia}`);
+        if (p.nObra !== 36 || p.nTotal !== nT || p.nFin !== nT - 36) errores.push(`${u.codigo}: nObra/nTotal/nFin ${p.nObra}/${p.nTotal}/${p.nFin}`);
+      }
     return errores.length === 0 ? true : errores.slice(0, 3).join(' | ');
   }));
 
@@ -9699,10 +9990,39 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!aprox(sumC, p.saldo + p.totalIntereses, TOL_USD)) errores.push(`${u.codigo}: Σc=${sumC.toFixed(2)} vs ${(p.saldo + p.totalIntereses).toFixed(2)}`);
       if (!aprox(p.totalUSD, u.precioReferencia + p.totalIntereses, TOL_USD)) errores.push(`${u.codigo}: totalUSD`);
       // Regla 2026-08-19: cuotaObra = resto / nTotal y A = cuotaObra (amortización = cuota de obra)
-      const resto = u.precioReferencia - p.anticipo - p.refEnObra;
+      const resto = u.precioReferencia - p.anticipo - p.refEnObra - p.refPost;
       if (!aprox(p.cuotaObra, resto / p.nTotal, TOL_USD)) errores.push(`${u.codigo}: cuotaObra ≠ resto/nTotal`);
       if (!aprox(p.amortizacion, p.cuotaObra, TOL_USD)) errores.push(`${u.codigo}: A ≠ cuotaObra`);
-      if (!aprox(p.saldo, resto * p.nFin / p.nTotal, TOL_USD)) errores.push(`${u.codigo}: saldo ≠ resto·nFin/nTotal`);
+      if (!aprox(p.saldo, resto * p.nFin / p.nTotal + p.refPost, TOL_USD)) errores.push(`${u.codigo}: saldo ≠ resto·nFin/nTotal + refPost`);
+    }
+    // ── Refuerzo POSTERIOR a la posesión (2026-10-29) ──
+    // El escalón no puede volverse un segundo tramo de amortización ni romper el cierre en 0.
+    {
+      const u = U_SEN();
+      const p = calcPlanExtendido(u, 30000, [{ monto: 9000, mes: 12 }, { monto: 15000, mes: 48 }], 0, 60);
+      if (p.refPost !== 15000) errores.push(`refPost ${p.refPost} ≠ 15000`);
+      if (p.refEnObra !== 9000) errores.push(`refEnObra ${p.refEnObra} ≠ 9000 (el post no debe contarse en obra)`);
+      // la cuota de capital es LA MISMA todos los meses: obra y tenencia
+      if (!aprox(p.amortizacion, p.cuotaObra, TOL_USD)) errores.push('post: A ≠ cuotaObra (dos tramos de amortización)');
+      if (p.cuadro.some(r => !aprox(r.amortizacion, p.cuotaObra, TOL_USD))) errores.push('post: amortización no constante');
+      // identidad estructural: el saldo a posesión NO descuenta el refuerzo post (no se pagó aún)
+      if (!aprox(p.saldo, p.cuotaObra * p.nFin + p.refPost, TOL_USD)) errores.push('post: saldo ≠ A·nFin + refPost');
+      // el interés del mes del refuerzo se calcula ANTES de aplicarlo
+      const fila = p.cuadro.find(r => r.mes === 48);
+      const prev = p.cuadro.find(r => r.mes === 47);
+      if (!fila || !prev) errores.push('post: falta la fila del mes 48');
+      else {
+        if (!aprox(fila.interes, (params.tasaMensualSaldo / 100) * fila.saldoInicial, TOL_USD)) errores.push('post: interés no es tasa × saldo de apertura');
+        if (!aprox(fila.saldoInicial, prev.saldoFinal, TOL_USD)) errores.push('post: la apertura no encadena con el cierre anterior');
+        if (!aprox(fila.saldoFinal, fila.saldoInicial - p.cuotaObra - 15000, TOL_USD)) errores.push('post: el refuerzo no se descuenta del saldo');
+      }
+      // y el saldo igual cierra en 0 al mes nTotal
+      if (!aprox(p.cuadro[p.cuadro.length - 1].saldoFinal, 0, TOL_USD)) errores.push('post: el saldo no cierra en 0');
+      // R3 cuenta SOLO obra: si el post entrara, aportesMinPosesionPct se volvería permisivo
+      if (!aprox(p.recaudObra, p.anticipo + p.refEnObra + p.cuotaObra * p.nObra, TOL_USD)) errores.push('post: recaudObra incluye el refuerzo posterior');
+      // los planes Edilia NO lo ven: normRefuerzos sigue cortando en nObra
+      const pRef = calcPlan36(u, 30000, [{ monto: 9000, mes: 12 }, { monto: 15000, mes: 48 }], 0);
+      if (!aprox(pRef.refEnObra, 9000, TOL_USD)) errores.push('post: calcPlan36 no debe ver el refuerzo posterior');
     }
     return errores.length === 0 ? true : errores.slice(0, 3).join(' | ');
   }));
@@ -9719,13 +10039,23 @@ document.addEventListener('DOMContentLoaded', () => {
     return errores.length === 0 ? true : errores.join(' | ');
   }));
 
-  test('J4', 1, 'Extendido — fórmula cerrada: totalIntereses = tasa · A · nFin·(nFin+1)/2 (validación externa a mano)', () => conParamsSensum(() => {
+  test('J4', 1, 'Extendido — fórmula cerrada: totalIntereses = tasa · [A·nFin(nFin+1)/2 + Σ Rpost·(mes−nObra)]', () => conParamsSensum(() => {
     const errores = [];
-    for (const u of [U_SEN(), U_SEN2()]) for (const nT of [37, 48, 60]) {
-      const p = calcPlanExtendido(u, Math.round(u.precioReferencia * 0.30), [{ monto: 5000, mes: 24 }], 0, nT);
-      const cerrada = (params.tasaMensualSaldo / 100) * p.amortizacion * p.nFin * (p.nFin + 1) / 2;
-      if (!aprox(p.totalIntereses, cerrada, TOL_USD)) errores.push(`${u.codigo} n=${nT}: ${p.totalIntereses.toFixed(4)} vs ${cerrada.toFixed(4)}`);
-    }
+    // 2026-10-29: la fórmula se generaliza. Cada refuerzo posterior baja el saldo de apertura de
+    // los meses que le siguen, así que descuenta interés en proporción a cuántos meses lleva
+    // puesto: Rⱼ · (mesⱼ − nObra). Sin refuerzos post el término es 0 y queda la fórmula vieja.
+    const cerrada = (p) => (params.tasaMensualSaldo / 100) * (
+      p.amortizacion * p.nFin * (p.nFin + 1) / 2
+      + (p.refuerzosPost || []).reduce((s, r) => s + r.monto * (r.mes - p.nObra), 0)
+    );
+    for (const u of [U_SEN(), U_SEN2()]) for (const nT of [37, 48, 60])
+      for (const refs of [[{ monto: 5000, mes: 24 }],                              // solo obra
+                          [{ monto: 5000, mes: 24 }, { monto: 8000, mes: 37 }],    // obra + post
+                          [{ monto: 7000, mes: nT }]]) {                            // post en el último mes
+        const p = calcPlanExtendido(u, Math.round(u.precioReferencia * 0.30), refs, 0, nT);
+        const c = cerrada(p);
+        if (!aprox(p.totalIntereses, c, TOL_USD)) errores.push(`${u.codigo} n=${nT}: ${p.totalIntereses.toFixed(4)} vs ${c.toFixed(4)}`);
+      }
     return errores.length === 0 ? true : errores.slice(0, 3).join(' | ');
   }));
 
@@ -10256,9 +10586,21 @@ document.addEventListener('DOMContentLoaded', () => {
       // [sumObra, sumRef, sumI, sumA, acumulado, totalUSD]
       if (nums.length < 6) errores.push('totales: ' + nums.join(','));
       else {
-        if (Math.abs(nums[3] - Math.round(ext.saldo)) > 1) errores.push('Σ amortización ≠ saldo');
-        if (Math.abs(nums[4] - nums[5]) > 2) errores.push('acumulado ≠ totalUSD: ' + nums[4] + ' vs ' + nums[5]);
-        if (Math.abs((30000 + nums[0] + nums[1] + nums[2] + nums[3]) - nums[5]) > 2) errores.push('anticipo+obra+ref+int+amort ≠ total');
+        // 2026-10-29: el cuadro pasó a ser un LIBRO ENTERO. Cada monto se redondea una vez, los
+        // repetidos se redondean una sola vez y se reutilizan, el acumulado suma lo IMPRESO y
+        // los totales son la suma aritmética de cada columna impresa. Lo que se testea ahora es
+        // ese cierre interno —que es lo que el cliente puede verificar sumando la columna— y no
+        // la coincidencia al dólar con el valor exacto del motor, que por diseño ya no se da:
+        // el residuo del redondeo va declarado en la nota al pie.
+        // Las tres identidades son EXACTAS, sin tolerancia: si alguna falla, la tabla miente.
+        if (nums[4] !== nums[5]) errores.push('acumulado ≠ total del cuadro: ' + nums[4] + ' vs ' + nums[5]);
+        if ((30000 + nums[0] + nums[1] + nums[2] + nums[3]) !== nums[5]) errores.push('anticipo+obra+ref+int+amort ≠ total: ' + (30000 + nums[0] + nums[1] + nums[2] + nums[3]) + ' vs ' + nums[5]);
+        // Amortización y cuota de obra son el MISMO número repetido (A = cuotaObra), así que sus
+        // totales tienen que estar en la proporción nFin : nObra exacta.
+        if (nums[3] * ext.nObra !== nums[0] * ext.nFin) errores.push('Σ amortización y Σ cuota obra no salen de la misma cuota');
+        // Y el residuo contra el motor exacto queda acotado: a lo sumo medio dólar por cuota.
+        if (Math.abs(nums[3] - ext.saldo) > ext.nFin) errores.push('Σ amortización se despega del saldo más de lo que explica el redondeo');
+        if (Math.abs(nums[5] - ext.totalUSD) > ext.nTotal) errores.push('total del cuadro se despega de totalUSD: ' + nums[5] + ' vs ' + Math.round(ext.totalUSD));
       }
       if (!cont.querySelector('.minuta-logo-svg svg')) errores.push('sensum sin logo SVG en minuta');
       if (!cont.querySelector('.minuta-footer-logo svg')) errores.push('sin pie del desarrollador');
@@ -10751,6 +11093,16 @@ document.addEventListener('DOMContentLoaded', () => {
       // pct que da monto 0 se descarta
       params.refuerzosDefault = [{ pct: 0, mes: 12 }, { pct: 7, mes: 24 }];
       if (construirRefuerzosDefault(pq).length !== 1) errs.push('pct0 no descartado');
+      // 2026-10-29: el corte pasó de nObra a nTotal. Con el filtro viejo, un refuerzo posterior
+      // a la posesión se descartaba ACÁ, antes de llegar al cotizador, y el plan nacía incompleto.
+      const bkN = params.nTotalMax, nO = params.nObraVigente;
+      try {
+        params.nTotalMax = nO + 24;
+        params.refuerzosDefault = [{ pct: 7, mes: nO + 10 }];
+        if (construirRefuerzosDefault(pq).length !== 1) errs.push('refuerzo post-posesión descartado');
+        params.refuerzosDefault = [{ pct: 7, mes: nO + 48 }];
+        if (construirRefuerzosDefault(pq).length !== 0) errs.push('refuerzo fuera del plazo no descartado');
+      } finally { params.nTotalMax = bkN; }
     } finally { params.refuerzosDefault = bk; }
     return errs.length === 0 ? true : errs.join(' | ');
   });
