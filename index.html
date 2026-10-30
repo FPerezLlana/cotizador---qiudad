@@ -1163,7 +1163,8 @@
     import { initializeApp }                          from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
     import { getFirestore, doc, getDoc, setDoc,
              onSnapshot, serverTimestamp,
-             collection, getDocs, query, where }     from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+             collection, getDocs, query, where,
+             Timestamp }                               from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
     import { getAuth, signInWithEmailAndPassword,
              signOut, onAuthStateChanged,
              GoogleAuthProvider, signInWithPopup }    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
@@ -1196,7 +1197,31 @@
     // ── Exponer al scope global para que el código legacy los use ──
     window._db   = db;
     window._auth = auth;
-    window._firestore = { doc, getDoc, setDoc, onSnapshot, serverTimestamp, collection, getDocs, query, where };
+    window._firestore = { doc, getDoc, setDoc, onSnapshot, serverTimestamp, collection, getDocs, query, where, Timestamp };
+
+    // ── Solicitudes de reserva: leer todas y reescribirlas (2026-10-29) ──
+    // Hasta acá el export llevaba params y unidades, pero no las solicitudes, así que un
+    // "restore" dejaba el inventario en un estado y la bandeja en otro: una unidad vuelve a
+    // disponible mientras su solicitud sigue figurando aprobada. Para que el archivo sirva de
+    // rollback real tiene que llevar las dos mitades.
+    window._leerSolicitudes = async function() {
+      const snap = await getDocs(collection(db, 'solicitudesReserva'));
+      const out = [];
+      snap.forEach(d => out.push({ docId: d.id, ...d.data() }));
+      return out;
+    };
+    // Reescribe cada solicitud del archivo. NO borra: las rules prohíben el delete, así que
+    // una solicitud creada después del export sobrevive al restore — se informa, no se pierde.
+    window._restaurarSolicitudes = async function(lista) {
+      const res = { ok: 0, fallaron: [] };
+      for (const s of (lista || [])) {
+        if (!s || !s.docId) continue;
+        const { docId, ...data } = s;
+        try { await setDoc(doc(db, 'solicitudesReserva', docId), data); res.ok++; }
+        catch (e) { res.fallaron.push(docId + ' (' + (e.code || e.message) + ')'); }
+      }
+      return res;
+    };
 
     // ── Auth state ──
     if (window.location.protocol === 'file:' || window.__DATOS_EMBEBIDOS__) {
@@ -8252,10 +8277,36 @@ async function cargarTodosLosProyectosEnMemoria() {
   return ids.map(id => ({ id, n: (getUnidadesDeProyecto(id) || []).length }));
 }
 
+// Los Timestamp de Firestore no sobreviven a JSON: quedan como {seconds, nanoseconds} sin
+// .toDate(), y todo el render de la bandeja los lee con .toDate()/.toMillis(). Se marcan al
+// serializar y se reconstruyen al restaurar; sin esto, un restore deja las solicitudes sin
+// fecha y nadie se entera hasta que alguien mira la bandeja.
+function _serializarTs(v) {
+  if (v && typeof v.toMillis === 'function') return { __ts__: v.toMillis() };
+  if (Array.isArray(v)) return v.map(_serializarTs);
+  if (v && typeof v === 'object') { const o = {}; Object.keys(v).forEach(k => { o[k] = _serializarTs(v[k]); }); return o; }
+  return v;
+}
+function _deserializarTs(v) {
+  const TS = window._firestore && window._firestore.Timestamp;
+  if (v && typeof v === 'object' && typeof v.__ts__ === 'number') return TS ? TS.fromMillis(v.__ts__) : new Date(v.__ts__);
+  if (Array.isArray(v)) return v.map(_deserializarTs);
+  if (v && typeof v === 'object') { const o = {}; Object.keys(v).forEach(k => { o[k] = _deserializarTs(v[k]); }); return o; }
+  return v;
+}
+
 async function exportarEstado() {
   sincronizarParamsACapas();
   const conteo = await cargarTodosLosProyectosEnMemoria();
   const estado = estadoV4();
+  // Solicitudes de reserva: van en el export para que sirva de rollback completo (pedido de
+  // Fede 2026-10-29). NO van en la copia de ejemplo, que se comparte: estos documentos llevan
+  // nombre, apellido, DNI, email y celular de cada cliente.
+  let nSol = 0, solErr = '';
+  if (window._leerSolicitudes) {
+    try { const sol = await window._leerSolicitudes(); estado.solicitudes = sol.map(_serializarTs); nSol = sol.length; }
+    catch (e) { solErr = (e && (e.code || e.message)) || 'error'; }
+  }
   const blob = new Blob([JSON.stringify(estado, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -8266,8 +8317,10 @@ async function exportarEstado() {
   // Se informa qué entró. Un export incompleto deja de ser silencioso: si un proyecto sale en 0
   // y tiene stock, se ve acá y no seis meses después.
   alert('Estado exportado.\n\n' + conteo.map(c => '  ' + (nombreProyecto(c.id) || c.id) + ': ' + c.n + ' unidad(es)').join('\n')
+        + '\n  Solicitudes de reserva: ' + (solErr ? 'NO SE PUDIERON LEER (' + solErr + ')' : nSol)
         + '\n\nIncluye los parámetros de los cuatro proyectos y los globales de mercado.'
-        + '\nSi alguno figura en 0 y no debería, revisá la conexión y volvé a exportar.');
+        + '\nSi alguno figura en 0 y no debería, revisá la conexión y volvé a exportar.'
+        + '\n\nEl archivo contiene datos personales de los clientes (nombre, DNI, email, celular): guardalo como tal.');
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8503,7 +8556,28 @@ function importarEstado(file) {
       renderListaUnidades();
       renderUnidadesGrid();
       showPage('unidades');
-      alert(`✓ Estado restaurado: ${unidades.length} unidades cargadas en ${nombreProyecto()}.`);
+      // ── Solicitudes de reserva (2026-10-29) ──
+      // Sin esto, restaurar dejaba el inventario en un estado y la bandeja en otro: una unidad
+      // vuelve a "disponible" mientras su solicitud sigue figurando aprobada sobre ella. Se
+      // reescriben SIEMPRE que el archivo las traiga, porque el restore tiene que dejar las dos
+      // mitades coherentes; si no las trae (export viejo), se avisa en vez de callar.
+      const solArchivo = Array.isArray(v4.solicitudes) ? v4.solicitudes : null;
+      const resumen = `✓ Estado restaurado: ${unidades.length} unidades en ${nombreProyecto()}.`;
+      if (!solArchivo) {
+        alert(resumen + '\n\n⚠ El archivo NO trae solicitudes de reserva: la bandeja queda como está.\n' +
+              'Si lo estabas usando como rollback, puede quedar una solicitud aprobada sobre una unidad que volvió a disponible.');
+      } else if (!window._restaurarSolicitudes) {
+        alert(resumen + '\n\n⚠ Sin conexión a Firestore: las ' + solArchivo.length + ' solicitudes del archivo NO se restauraron.');
+      } else {
+        window._restaurarSolicitudes(solArchivo.map(_deserializarTs)).then(r => {
+          let m = resumen + '\n\nSolicitudes reescritas: ' + r.ok + ' de ' + solArchivo.length + '.';
+          if (r.fallaron.length) m += '\n\n⚠ NO se pudieron escribir:\n  ' + r.fallaron.join('\n  ');
+          // Las rules prohíben borrar, así que una solicitud creada después del export sobrevive.
+          m += '\n\nNota: una solicitud creada después del export no se borra — el restore devuelve el contenido de las que estaban, no elimina las nuevas.';
+          alert(m);
+          if (typeof cargarSolicitudesPendientes === 'function') cargarSolicitudesPendientes();
+        }).catch(e => alert(resumen + '\n\n⚠ Error restaurando solicitudes: ' + (e.message || e)));
+      }
     } catch(err) {
       alert('Error al leer el archivo: ' + err.message);
     }
