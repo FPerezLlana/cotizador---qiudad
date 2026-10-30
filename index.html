@@ -8114,8 +8114,31 @@ function cargarEstadoLocalStorage() {
   }
 }
 
-function exportarEstado() {
+// Trae de Firestore las unidades de TODOS los proyectos y las deja en memoria (2026-10-29).
+//
+// `estadoV4()` serializa `unidadesPorProyecto`, que solo tiene los proyectos por los que el
+// usuario pasó: las unidades se cargan recién al entrar a cada proyecto. Un export hecho sin
+// haber entrado a los cuatro salía con proyectos en 0 y PARECÍA COMPLETO — el archivo trae las
+// cuatro claves, todas presentes, algunas vacías. Como ese archivo es el respaldo manual del
+// sistema, el modo de falla es el peor posible: un backup que se descubre incompleto el día que
+// hace falta restaurarlo.
+// Se lee siempre, incluso de los proyectos ya cargados, para que el export refleje Firestore en
+// el momento de la bajada y no lo que quedó en memoria hace media hora (otro admin pudo haber
+// importado stock mientras tanto). Devuelve el conteo por proyecto para poder mostrarlo.
+async function cargarTodosLosProyectosEnMemoria() {
+  const ids = Object.keys(proyectosConfig || {});
+  for (const id of ids) {
+    // En file:// no existe el módulo de Firebase: se exporta lo que haya en memoria.
+    if (typeof window._cargarUnidadesProyecto === 'function') {
+      await window._cargarUnidadesProyecto(id);
+    }
+  }
+  return ids.map(id => ({ id, n: (getUnidadesDeProyecto(id) || []).length }));
+}
+
+async function exportarEstado() {
   sincronizarParamsACapas();
+  const conteo = await cargarTodosLosProyectosEnMemoria();
   const estado = estadoV4();
   const blob = new Blob([JSON.stringify(estado, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -8124,6 +8147,11 @@ function exportarEstado() {
   a.download = `cotizador_estado_${new Date().toISOString().slice(0,10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+  // Se informa qué entró. Un export incompleto deja de ser silencioso: si un proyecto sale en 0
+  // y tiene stock, se ve acá y no seis meses después.
+  alert('Estado exportado.\n\n' + conteo.map(c => '  ' + (nombreProyecto(c.id) || c.id) + ': ' + c.n + ' unidad(es)').join('\n')
+        + '\n\nIncluye los parámetros de los cuatro proyectos y los globales de mercado.'
+        + '\nSi alguno figura en 0 y no debería, revisá la conexión y volvé a exportar.');
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8134,9 +8162,13 @@ function exportarEstado() {
 // para los CDN) lo ve todo cargado sin importar nada. No hay fetch posible
 // en file://, así que se serializa el DOM en vivo: el boot re-renderiza los
 // contenedores, por lo que el contenido "en vivo" se sobrescribe al abrir.
-function generarCopiaEjemplo() {
+async function generarCopiaEjemplo() {
   try {
     sincronizarParamsACapas();
+    // Mismo criterio que el export (2026-10-29): la copia lleva los cuatro proyectos, no solo
+    // los que el usuario visitó. Si no, se comparte una copia "de ejemplo" a la que le faltan
+    // desarrollos enteros sin que nada lo indique.
+    await cargarTodosLosProyectosEnMemoria();
     const datos = estadoV4();
     // Clonar el documento actual
     const clone = document.documentElement.cloneNode(true);
