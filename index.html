@@ -507,6 +507,20 @@
 
   /* ── DIVIDER ── */
   .divider { height: 1px; background: var(--gray-200); margin: 20px 0; }
+  /* Casillas del panel de Parámetros (2026-10-29). Sin clase propia heredaban dos reglas
+     globales que las rompían: `label { text-transform: uppercase; letter-spacing: .06em }`
+     —que además partía en dos líneas las etiquetas largas— y `input, select { width: 100% }`,
+     que estiraba el checkbox a todo el ancho y empujaba el texto al margen derecho. */
+  .param-check {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 0; cursor: pointer;
+    font-size: 13px; font-weight: 500; color: var(--gray-700);
+    text-transform: none; letter-spacing: 0; margin-bottom: 0;
+  }
+  .param-check input[type="checkbox"] {
+    width: 16px; height: 16px; flex: 0 0 16px; margin: 0;
+    accent-color: var(--brand-dark); cursor: pointer;
+  }
   .section-label {
     font-size: 10px; font-weight: 700;
     letter-spacing: 0.12em; text-transform: uppercase;
@@ -1959,19 +1973,19 @@
     <div class="param-section" data-solo-edilia="1">
       <div class="param-section-title">Planes visibles en cotizador <span class="param-scope param-scope-proyecto"></span></div>
       <div style="font-size:12px; color:var(--gray-500); margin-bottom:12px;">Tildá qué planes querés que aparezcan en la comparativa que ven los vendedores.</div>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-36c"  onchange="togglePlanVisible('36c',  this.checked)"> 36 cuotas
       </label>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-60c"  onchange="togglePlanVisible('60c',  this.checked)"> 60 cuotas
       </label>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-120c" onchange="togglePlanVisible('120c', this.checked)"> 120 cuotas
       </label>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-180c" onchange="togglePlanVisible('180c', this.checked)"> 180 cuotas
       </label>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-240c" onchange="togglePlanVisible('240c', this.checked)"> 240 cuotas
       </label>
       <div style="font-size:11px; color:var(--gray-500); margin-top:10px; padding-top:10px; border-top:1px solid var(--gray-100);">
@@ -1985,10 +1999,10 @@
     <div class="param-section" data-solo-no-edilia="1">
       <div class="param-section-title">Planes visibles en cotizador <span class="param-scope param-scope-proyecto"></span></div>
       <div style="font-size:12px; color:var(--gray-500); margin-bottom:12px;">Tildá qué planes querés que aparezcan en la comparativa que ven los vendedores.</div>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-ne-36c" onchange="togglePlanVisible('36c', this.checked)"> <span id="p-lbl-plan-ne-36c">Plan estándar</span>
       </label>
-      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+      <label class="param-check">
         <input type="checkbox" id="p-plan-ne-ext" onchange="togglePlanVisible('ext', this.checked)"> <span id="p-lbl-plan-ne-ext">Plan extendido</span>
       </label>
       <div style="font-size:11px; color:var(--gray-500); margin-top:10px; padding-top:10px; border-top:1px solid var(--gray-100);">
@@ -7497,8 +7511,9 @@ function cargarParametrosEnUI() {
     const t = document.getElementById('p-titulo-obra');
     if (t) t.childNodes[0].nodeValue = (voc.hito ? 'Construcción y obra ' : 'Plazos y financiación ');
     // Las dos casillas de la rama no-Edilia se rotulan con los plazos reales del proyecto.
-    set('p-lbl-plan-ne-36c', 'Plan estándar · ' + (params.nObraVigente || 0) + ' cuotas' + (voc.hito ? '' : ' sin interés'));
-    set('p-lbl-plan-ne-ext', 'Plan extendido · hasta ' + (params.nTotalMax || 0) + ' cuotas');
+    const cuotas = (n) => n + (n === 1 ? ' cuota' : ' cuotas');
+    set('p-lbl-plan-ne-36c', 'Plan estándar · ' + cuotas(params.nObraVigente || 0) + (voc.hito ? '' : ' sin interés'));
+    set('p-lbl-plan-ne-ext', 'Plan extendido · hasta ' + cuotas(params.nTotalMax || 0));
   }
   setCheck('p-plan-ne-36c', pv['36c'] ?? true);
   setCheck('p-plan-ne-ext', pv['ext'] ?? true);
