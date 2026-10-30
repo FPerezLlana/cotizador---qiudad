@@ -4250,8 +4250,8 @@ function cuadroMarchaHTML(plan, opts) {
           <thead><tr><th>Mes</th><th>Etapa</th><th>Cuota</th><th>Refuerzo</th><th>Interés</th><th>Amortización</th><th>Pago del mes</th><th>Acumulado</th></tr></thead>
           <tbody>${filas.join('')}
             <tr class="minuta-row-espacio"><td colspan="8"></td></tr>
-            <tr class="minuta-row-subhead"><td colspan="2">Acumulados del plan</td><td>Cuotas</td><td>Refuerzos</td><td>Intereses</td><td>Capital amortizado</td><td>Total pagado</td><td>Acumulado</td></tr>
-            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumCuotas)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
+            <tr class="minuta-row-subhead"><td colspan="2">Acumulados del plan</td><td>Cuotas</td><td>Refuerzos</td><td>Intereses</td><td>Capital amortizado</td><td>Total pagado</td><td></td></tr>
+            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumCuotas)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td></td></tr>
           </tbody>
         </table>
       </div>`;
@@ -10654,28 +10654,28 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!/1–35/.test(cont.querySelector('.minuta-tabla-cuadro').textContent)) errores.push('sin fila agrupada 1–35');
       const tot = cont.querySelector('.minuta-tabla-cuadro .minuta-row-total');
       const nums = tot ? [...tot.querySelectorAll('td')].map(td => parseFloat(td.textContent.replace(/[^0-9,.-]/g, '').replace(/\./g, '').replace(',', '.'))).filter(n => !isNaN(n)) : [];
-      // [sumCuotas, sumRef, sumI, sumA, acumulado, totalUSD]
-      if (nums.length < 6) errores.push('totales: ' + nums.join(','));
+      // [sumCuotas, sumRef, sumI, sumA, totalPagado] — la última celda va vacía desde
+      // 2026-10-29: el acumulado final repetía el total pagado.
+      if (nums.length !== 5) errores.push('totales: ' + nums.join(','));
       else {
         // 2026-10-29: el cuadro pasó a ser un LIBRO ENTERO. Cada monto se redondea una vez, los
         // repetidos se redondean una sola vez y se reutilizan, el acumulado suma lo IMPRESO y
         // los totales son la suma aritmética de cada columna impresa. Lo que se testea ahora es
         // ese cierre interno, que es lo que el cliente puede verificar leyendo la tabla.
         // Las identidades de abajo son EXACTAS: si alguna falla, la tabla miente.
-        if (nums[4] !== nums[5]) errores.push('acumulado ≠ total del cuadro: ' + nums[4] + ' vs ' + nums[5]);
         // 2026-10-29: la columna Amortización lleva el capital de TODOS los pagos (anticipo,
         // cuotas de obra, refuerzos y cuotas de tenencia), para que su total sea el precio y el
         // cliente pueda compararlo. De ahí las dos identidades, exactas y sin tolerancia:
         // Los acumuladores van exactos y se redondean al imprimir, así que los tres totales
         // pueden quedar a un dólar entre sí por el redondeo de cada uno. Más que eso es un bug.
-        if (Math.abs(nums[2] + nums[3] - nums[5]) > 1) errores.push('interés + amortización ≠ total: ' + (nums[2] + nums[3]) + ' vs ' + nums[5]);
+        if (Math.abs(nums[2] + nums[3] - nums[4]) > 1) errores.push('interés + amortización ≠ total: ' + (nums[2] + nums[3]) + ' vs ' + nums[4]);
         // Cuota y Refuerzo son apertura del capital, no sumandos aparte: tienen que estar
         // CONTENIDOS en amortización, nunca sumar más que ella.
         if (nums[0] + nums[1] > nums[3]) errores.push('cuotas + refuerzos excede la amortización: ' + (nums[0] + nums[1]) + ' vs ' + nums[3]);
         // El capital amortizado tiene que dar EXACTO contra el precio: es el número que el
         // cliente contrasta, y lo garantizan los acumuladores exactos.
         if (nums[3] !== Math.round(uS.precioReferencia)) errores.push('Σ amortización ≠ precio: ' + nums[3] + ' vs ' + Math.round(uS.precioReferencia));
-        if (Math.abs(nums[5] - ext.totalUSD) > ext.nTotal) errores.push('total del cuadro se despega de totalUSD: ' + nums[5] + ' vs ' + Math.round(ext.totalUSD));
+        if (Math.abs(nums[4] - ext.totalUSD) > ext.nTotal) errores.push('total del cuadro se despega de totalUSD: ' + nums[4] + ' vs ' + Math.round(ext.totalUSD));
       }
       if (!cont.querySelector('.minuta-logo-svg svg')) errores.push('sensum sin logo SVG en minuta');
       if (!cont.querySelector('.minuta-footer-logo svg')) errores.push('sin pie del desarrollador');
