@@ -4202,7 +4202,7 @@ function cuadroMarchaHTML(plan, opts) {
     if (hito > m) {
       const n = hito - m, ult = hito - 1;
       acum += cuotaObra * n; sumA += cuotaObra * n; sumCuotas += cuotaObra * n;
-      filas.push(`<tr><td>${n > 1 ? m + '–' + ult : m}</td><td>Obra · ${n > 1 ? 'cuotas ' + m + ' a ' + ult : 'cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
+      filas.push(`<tr><td>${n > 1 ? m + '–' + ult : m}</td><td>${n > 1 ? 'Cuotas ' + m + ' a ' + ult : 'Cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
     }
     // Fila del hito: el mes entero
     const ref = refEnMes(hito);
@@ -4211,7 +4211,7 @@ function cuadroMarchaHTML(plan, opts) {
     acum += amort; sumRef += ref; sumA += amort; sumCuotas += cuotaObra;
     const etiqueta = esPos
       ? (ref ? 'Posesión · cuota ' + hito + ' y refuerzo' : 'Posesión · cuota ' + hito)
-      : 'Obra · cuota ' + hito + ' y refuerzo';
+      : 'Cuota ' + hito + ' y refuerzo';
     filas.push(`<tr class="minuta-row-hito"><td>${hito}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${ref ? f(ref) : ''}</td><td></td><td>${f(amort)}</td><td><strong>${f(amort)}</strong></td><td>${f(acum)}</td></tr>`);
     m = hito + 1;
   }
@@ -4224,20 +4224,28 @@ function cuadroMarchaHTML(plan, opts) {
     const amort = cuotaObra + rV;           // capital del mes: la cuota más el refuerzo si lo hay
     const pago = amort + iV;
     acum += pago; sumI += iV; sumRef += rV; sumA += amort; sumCuotas += cuotaObra;
-    const etiqueta = rV ? 'Tenencia · cuota y refuerzo' : 'Cuota en tenencia';
-    // La columna Cuota lleva el MISMO número los nTotal meses, en obra y en tenencia: es la
-    // cuota de capital, que no cambia. Lo que varía mes a mes es el interés, en su columna.
+    // Las etiquetas no dicen "obra" ni "tenencia" (2026-10-29): la cuota de capital es la
+    // misma los nTotal meses, así que nombrarla distinto a los dos lados de la posesión sugería
+    // dos productos donde hay uno. La fila de posesión marca el corte, y desde el mes siguiente
+    // aparece la columna Interés: el cambio se lee solo.
+    const etiqueta = rV ? 'Cuota ' + r.mes + ' y refuerzo' : 'Cuota ' + r.mes;
     filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
   });
   // Totales: los acumuladores exactos, redondeados al imprimir.
   //   Amortización = capital total = el precio de la unidad, al dólar.
   //   Amortización + Interés = Pago del mes = último acumulado.
   //   Anticipo + Cuotas + Refuerzos = Amortización (la apertura del capital por origen).
+  // La leyenda de intereses pasa a ser la BAJADA del cuadro (2026-10-29) y se va del pie. Es la
+  // advertencia que enmarca todo lo que viene abajo, así que va antes de los números y no
+  // después; al pie, además, caía en una página propia con el plan a 60 meses. Los proyectos que
+  // no la declaran conservan la bajada descriptiva.
   const leyenda = (opts && opts.leyendaIntereses) || '';
+  const bajada = leyenda
+    || `Anticipo en la firma · ${plan.nTotal} cuotas de capital iguales · los refuerzos se pagan en su mes, incluidos los posteriores a la posesión · sobre el saldo pendiente desde la posesión se devenga un ${fmt(plan.tasaMensualSaldo, 2)} % mensual, que se paga y no se capitaliza. Valores en USD.`;
   return `
       <div class="minuta-seccion minuta-cuadro-marcha">
-        <div class="minuta-seccion-titulo">Plan de pago completo — ${plan.nTotal} cuotas
-          <span class="minuta-seccion-sub">Anticipo en la firma · ${plan.nTotal} cuotas de capital iguales, las primeras ${nObra} durante la obra y las restantes ${plan.nFin} en tenencia · los refuerzos se pagan en su mes, incluidos los posteriores a la posesión · sobre el saldo pendiente desde la posesión se devenga un ${fmt(plan.tasaMensualSaldo, 2)} % mensual, que se paga y no se capitaliza. El ejemplo supone una entrega estimada al mes ${nObra}. Valores en USD.</span>
+        <div class="minuta-seccion-titulo">Ejemplo plan de pago completo con entrega en el mes ${nObra}
+          <span class="minuta-seccion-sub">${bajada}</span>
         </div>
         <table class="minuta-tabla minuta-tabla-cuadro">
           <thead><tr><th>Mes</th><th>Etapa</th><th>Cuota</th><th>Refuerzo</th><th>Interés</th><th>Amortización</th><th>Pago del mes</th><th>Acumulado</th></tr></thead>
@@ -4248,7 +4256,6 @@ function cuadroMarchaHTML(plan, opts) {
           </tbody>
         </table>
         <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. La columna Cuota es la cuota de capital, igual en los ${plan.nTotal} meses; el Anticipo, las Cuotas y los Refuerzos abren ese capital según su origen. El mes con refuerzo y el de la posesión van en fila propia, con el pago completo de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
-        ${leyenda ? `<div class="minuta-cuadro-nota">${leyenda}</div>` : ''}
       </div>`;
 }
 
