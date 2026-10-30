@@ -736,8 +736,12 @@
   .minuta-cuadro-marcha { page-break-before: always; break-before: page; page-break-inside: avoid; break-inside: avoid; margin-top: 0; }
   .minuta-tabla.minuta-tabla-cuadro { font-size: 8.5pt; }   /* doble clase: gana a .minuta-tabla (10pt) */
   .minuta-tabla.minuta-tabla-cuadro th, .minuta-tabla.minuta-tabla-cuadro td { padding: 2px 6px; text-align: right; font-family: 'DM Mono', monospace; line-height: 1.25; border-bottom: 1px solid #eee; white-space: nowrap; }
-  .minuta-tabla.minuta-tabla-cuadro th { font-size: 7.5pt; padding: 4px 6px; }
-  .minuta-tabla-cuadro tr.minuta-row-hito td { background: var(--brand-pale) !important; font-weight: 600; }
+  /* Jerarquía del cuadro (2026-10-29): la negrita queda SOLO en los encabezados. Adentro de la
+     tabla de pagos no hay ninguna: con medio centenar de filas, resaltar una columna y las filas
+     de hito competía con los títulos y ensuciaba la lectura. Las filas de hito se siguen
+     distinguiendo por el fondo. */
+  .minuta-tabla.minuta-tabla-cuadro th { font-size: 7.5pt; padding: 4px 6px; font-weight: 700; }
+  .minuta-tabla-cuadro tr.minuta-row-hito td { background: var(--brand-pale) !important; font-weight: 400; }
   /* Separador + encabezado repetido antes de los totales: después de medio centenar de filas el
      lector ya perdió los títulos, y los totales son acumulados, no valores del mes. */
   .minuta-tabla-cuadro tr.minuta-row-espacio td { border-bottom: none; height: 14px; padding: 0; }
@@ -4180,7 +4184,7 @@ function cuadroMarchaHTML(plan, opts) {
   // El anticipo NO va en la columna "Cuota": no es una cuota. Sí va en
   // Amortización, que lleva el capital de TODOS los pagos (ver más abajo).
   sumA += antVista;
-  filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td>${f(antVista)}</td><td><strong>${f(antVista)}</strong></td><td>${f(acum)}</td></tr>`);
+  filas.push(`<tr class="minuta-row-hito"><td>0</td><td>Firma · anticipo</td><td></td><td></td><td></td><td>${f(antVista)}</td><td>${f(antVista)}</td><td>${f(acum)}</td></tr>`);
   // (antVista es el anticipo exacto; round500 ya lo dejó entero, pero no se asume)
   // Obra — comprimida (Fede 2026-08-19, 2ª iteración): períodos de cuotas de obra con el MISMO
   // pago, cortados en cada mes con refuerzo (inclusive) y en la posesión. Fila del período:
@@ -4201,7 +4205,7 @@ function cuadroMarchaHTML(plan, opts) {
     if (hito > m) {
       const n = hito - m, ult = hito - 1;
       acum += cuotaObra * n; sumA += cuotaObra * n; sumCuotas += cuotaObra * n;
-      filas.push(`<tr><td>${n > 1 ? m + '–' + ult : m}</td><td>${n > 1 ? 'Cuotas ' + m + ' a ' + ult : 'Cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td><strong>${f(cuotaObra)}</strong></td><td>${f(acum)}</td></tr>`);
+      filas.push(`<tr><td>${n > 1 ? m + '–' + ult : m}</td><td>${n > 1 ? 'Cuotas ' + m + ' a ' + ult : 'Cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td>${f(cuotaObra)}</td><td>${f(acum)}</td></tr>`);
     }
     // Fila del hito: el mes entero
     const ref = refEnMes(hito);
@@ -4211,7 +4215,7 @@ function cuadroMarchaHTML(plan, opts) {
     const etiqueta = esPos
       ? (ref ? 'Posesión · cuota ' + hito + ' y refuerzo' : 'Posesión · cuota ' + hito)
       : 'Cuota ' + hito + ' y refuerzo';
-    filas.push(`<tr class="minuta-row-hito"><td>${hito}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${ref ? f(ref) : ''}</td><td></td><td>${f(amort)}</td><td><strong>${f(amort)}</strong></td><td>${f(acum)}</td></tr>`);
+    filas.push(`<tr class="minuta-row-hito"><td>${hito}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${ref ? f(ref) : ''}</td><td></td><td>${f(amort)}</td><td>${f(amort)}</td><td>${f(acum)}</td></tr>`);
     m = hito + 1;
   }
   // Financiación. El loop ahora dibuja también los refuerzos POSTERIORES a la posesión: antes
@@ -4228,7 +4232,7 @@ function cuadroMarchaHTML(plan, opts) {
     // dos productos donde hay uno. La fila de posesión marca el corte, y desde el mes siguiente
     // aparece la columna Interés: el cambio se lee solo.
     const etiqueta = rV ? 'Cuota ' + r.mes + ' y refuerzo' : 'Cuota ' + r.mes;
-    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td><strong>${f(pago)}</strong></td><td>${f(acum)}</td></tr>`);
+    filas.push(`<tr${rV ? ' class="minuta-row-hito"' : ''}><td>${r.mes}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${rV ? f(rV) : ''}</td><td>${f(iV)}</td><td>${f(amort)}</td><td>${f(pago)}</td><td>${f(acum)}</td></tr>`);
   });
   // Totales: los acumuladores exactos, redondeados al imprimir.
   //   Amortización = capital total = el precio de la unidad, al dólar.
@@ -4251,7 +4255,7 @@ function cuadroMarchaHTML(plan, opts) {
           <tbody>${filas.join('')}
             <tr class="minuta-row-espacio"><td colspan="8"></td></tr>
             <tr class="minuta-row-subhead"><td colspan="2">Acumulados del plan</td><td>Cuotas</td><td>Refuerzos</td><td>Intereses</td><td>Capital amortizado</td><td>Total pagado</td><td></td></tr>
-            <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumCuotas)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td></td></tr>
+            <tr class="minuta-row-total"><td colspan="2">Totales</td><td>${f(sumCuotas)}</td><td>${f(sumRef)}</td><td>${f(sumI)}</td><td>${f(sumA)}</td><td>${f(acum)}</td><td></td></tr>
           </tbody>
         </table>
       </div>`;
