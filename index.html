@@ -4148,12 +4148,8 @@ function cuadroMarchaHTML(plan, opts) {
   // acumulado avanzaba con el valor EXACTO. A los catorce meses de obra el acumulado ya estaba
   // varios dólares arriba de lo que sumaban las celdas impresas, y la deriva crecía fila a fila:
   // el cliente sumaba la columna y no le daba. La tabla estaba en desacuerdo consigo misma.
-  // Ahora: cada monto se redondea UNA vez, los que se repiten (cuota de obra y amortización, que
-  // son el mismo número) se redondean una sola vez y se reutilizan, el acumulado suma LO IMPRESO
-  // y los totales son la suma aritmética de cada columna impresa. Todo cierra por construcción.
-  // El motor queda exacto: esto es capa de presentación. La diferencia que queda entre el capital
-  // que suma el cuadro y el precio del titular es el residuo del redondeo —unos pocos dólares,
-  // ~0,02 %— y va declarada en la nota al pie en vez de repartirse como deriva dentro de la tabla.
+  // Ahora los acumuladores llevan el valor EXACTO y el redondeo ocurre solo al imprimir, así que
+  // los totales cierran contra el precio al dólar. El motor queda intacto: esto es presentación.
   const f = (v) => fmtUSD(v);          // redondea al imprimir; los acumuladores van exactos
   const nObra = plan.nObra || 0;
   const refs = Array.isArray(plan.refuerzos) ? plan.refuerzos : [];
@@ -4170,10 +4166,13 @@ function cuadroMarchaHTML(plan, opts) {
   // Los acumuladores guardan el valor EXACTO mes a mes y se redondean solo al imprimir
   // (decisión de Fede, 2026-10-29). Así el total de amortización da el precio al dólar sin
   // tener que deformar ninguna cuota: ningún mes aparece con un monto distinto a los demás.
-  // Lo que se resigna es que la suma de las celdas impresas puede quedar unos dólares del
-  // acumulado final —el redondeo de cada celda, acotado a medio dólar, repetido nTotal veces—,
-  // y eso es lo que cubre la nota al pie. La alternativa (absorber el residuo en la última
-  // cuota) hacía cerrar la suma pero dejaba una cuota hasta 30 USD más alta que las otras 59.
+  // Lo que se resigna es que sumar a mano las celdas impresas puede dar unos dólares distinto
+  // del acumulado final —el redondeo de cada celda, acotado a medio dólar, repetido nTotal
+  // veces, y más visible en las filas de obra agrupadas, donde se multiplica la cuota impresa
+  // por los meses del período. La alternativa (absorber el residuo en la última cuota) hacía
+  // cerrar esa suma pero dejaba una cuota hasta 30 USD más alta que las otras 59.
+  // La nota al pie que lo declaraba se sacó del documento el 2026-10-29 (pedido de Fede): el
+  // número que el cliente contrasta —el capital amortizado— sí da exacto.
   let acum = 0, sumRef = 0, sumI = 0, sumA = 0, sumCuotas = 0;
   // Mes 0: anticipo
   const antVista = plan.anticipo || 0;
@@ -4255,7 +4254,6 @@ function cuadroMarchaHTML(plan, opts) {
             <tr class="minuta-row-total"><td colspan="2">Totales</td><td><strong>${f(sumCuotas)}</strong></td><td><strong>${f(sumRef)}</strong></td><td><strong>${f(sumI)}</strong></td><td><strong>${f(sumA)}</strong></td><td><strong>${f(acum)}</strong></td><td>${f(acum)}</td></tr>
           </tbody>
         </table>
-        <div class="minuta-cuadro-nota">Amortización = capital que cancela cada pago; su total es el precio de la unidad. Pago del mes = amortización + interés, y es lo que se paga cada mes del período. La columna Cuota es la cuota de capital, igual en los ${plan.nTotal} meses; el Anticipo, las Cuotas y los Refuerzos abren ese capital según su origen. El mes con refuerzo y el de la posesión van en fila propia, con el pago completo de ese mes. El acumulado se indica al cierre de cada fila. Los montos pueden diferir por redondeo.</div>
       </div>`;
 }
 
@@ -10662,10 +10660,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2026-10-29: el cuadro pasó a ser un LIBRO ENTERO. Cada monto se redondea una vez, los
         // repetidos se redondean una sola vez y se reutilizan, el acumulado suma lo IMPRESO y
         // los totales son la suma aritmética de cada columna impresa. Lo que se testea ahora es
-        // ese cierre interno —que es lo que el cliente puede verificar sumando la columna— y no
-        // la coincidencia al dólar con el valor exacto del motor, que por diseño ya no se da:
-        // el residuo del redondeo va declarado en la nota al pie.
-        // Las tres identidades son EXACTAS, sin tolerancia: si alguna falla, la tabla miente.
+        // ese cierre interno, que es lo que el cliente puede verificar leyendo la tabla.
+        // Las identidades de abajo son EXACTAS: si alguna falla, la tabla miente.
         if (nums[4] !== nums[5]) errores.push('acumulado ≠ total del cuadro: ' + nums[4] + ' vs ' + nums[5]);
         // 2026-10-29: la columna Amortización lleva el capital de TODOS los pagos (anticipo,
         // cuotas de obra, refuerzos y cuotas de tenencia), para que su total sea el precio y el
@@ -10677,7 +10673,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // CONTENIDOS en amortización, nunca sumar más que ella.
         if (nums[0] + nums[1] > nums[3]) errores.push('cuotas + refuerzos excede la amortización: ' + (nums[0] + nums[1]) + ' vs ' + nums[3]);
         // El capital amortizado tiene que dar EXACTO contra el precio: es el número que el
-        // cliente contrasta. El residuo del redondeo lo absorbe la última cuota de tenencia.
+        // cliente contrasta, y lo garantizan los acumuladores exactos.
         if (nums[3] !== Math.round(uS.precioReferencia)) errores.push('Σ amortización ≠ precio: ' + nums[3] + ' vs ' + Math.round(uS.precioReferencia));
         if (Math.abs(nums[5] - ext.totalUSD) > ext.nTotal) errores.push('total del cuadro se despega de totalUSD: ' + nums[5] + ' vs ' + Math.round(ext.totalUSD));
       }
