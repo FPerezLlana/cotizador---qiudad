@@ -6637,6 +6637,19 @@ function esComplemento(u) {
   return !!u && categoriaUnidad(u) === 'Complementaria';
 }
 
+// index_99: el m² homologado es una métrica de tasación interna — alimenta recaudM2 y el umbral
+// de obra, y no entra en NINGÚN precio de los proyectos no-Edilia (precioReferencia y precioCash
+// vienen del Excel). Convivía en la misma pantalla con "M² totales" (suma física de superficies)
+// mostrando dos números distintos para la misma unidad sin nada que los explicara: Terrazas UF 01C
+// salía 71,50 hom en el sidebar y 74,00 totales en el panel; Sensum UF H404, 61,00 contra 72,40.
+// El vendedor ve superficie física en los tres lados; admin conserva el homologado.
+// Lee el rol EFECTIVO en cada render (no el real), así "Visión vendedor" lo previsualiza bien.
+function verM2Hom() { return window.currentUserRole === 'admin'; }
+function m2TotalFisico(u, cfg) {
+  return clavesSuperficieProyecto(cfg || proyectoCfg())
+    .reduce((s, k) => s + (Number(u[k]) || 0), 0);
+}
+
 function renderListaUnidades() {
   const lista = document.getElementById('lista-unidades');
   // Excluir cocheras/bauleras del listado de cotización — son add-ons.
@@ -6657,7 +6670,7 @@ function renderListaUnidades() {
       <div>
         <div class="unidad-codigo">${u.codigo}</div>
         <div class="unidad-desc">${u.descripcion}</div>
-        <div class="unidad-m2">${fmt(u.m2hom,2)} m² hom${u.clase ? ' · ' + u.clase : ''}</div>
+        <div class="unidad-m2">${verM2Hom() ? fmt(u.m2hom,2) + ' m² hom' : fmt(m2TotalFisico(u),2) + ' m² tot'}${u.clase ? ' · ' + u.clase : ''}</div>
       </div>
       <div class="unidad-precio">USD ${fmt(u.precioCash)}</div>
     </div>`;
@@ -6679,7 +6692,7 @@ function filtrarUnidades() {
       <div>
         <div class="unidad-codigo">${u.codigo}</div>
         <div class="unidad-desc">${u.descripcion}</div>
-        <div class="unidad-m2">${fmt(u.m2hom,2)} m² hom${u.clase ? ' · ' + u.clase : ''}</div>
+        <div class="unidad-m2">${verM2Hom() ? fmt(u.m2hom,2) + ' m² hom' : fmt(m2TotalFisico(u),2) + ' m² tot'}${u.clase ? ' · ' + u.clase : ''}</div>
       </div>
       <div class="unidad-precio">USD ${fmt(u.precioCash)}</div>
     </div>`;
@@ -7036,7 +7049,7 @@ function renderTablaUnidades(unidadesFiltradas) {
     <thead><tr>
       <th>UF</th><th>Piso</th><th>Descripción</th><th>Vista</th><th>Orientación</th>
       ${clavesSup.map(k => `<th style="text-align:right;">${labelSuperficie(k).replace(/^M² /, 'm² ')}</th>`).join('')}
-      <th style="text-align:right;">m² hom</th>
+      ${verM2Hom() ? '<th style="text-align:right;">m² hom</th>' : ''}
       ${proyectoCfg().usaEdilia ? '<th>Clase</th>' : ''}
       <th style="text-align:right;">Precio referencia</th>
       <th style="text-align:right;">Precio contado</th>
@@ -7069,7 +7082,7 @@ function renderTablaUnidades(unidadesFiltradas) {
           <td style="font-size:12px;white-space:nowrap;">${u.vista||'—'}</td>
           <td style="font-size:12px;">${u.orientacion||'—'}</td>
           ${clavesSup.map(k => `<td style="text-align:right;">${(u[k]||0).toFixed(2)}</td>`).join('')}
-          <td style="text-align:right;">${(u.m2hom||0).toFixed(2)}</td>
+          ${verM2Hom() ? `<td style="text-align:right;">${(u.m2hom||0).toFixed(2)}</td>` : ''}
           ${proyectoCfg().usaEdilia ? `<td style="font-size:11px;color:var(--brand-mid);font-weight:600;">${u.clase||u.claseEdilia||'—'}</td>` : ''}
           <td style="text-align:right;font-family:'DM Mono',monospace;">USD ${fmt(u.precioReferencia)}</td>
           <td style="text-align:right;font-family:'DM Mono',monospace;">USD ${fmt(u.precioCash)}</td>
@@ -7155,7 +7168,7 @@ function renderUnidadesGrid() {
         </div>
       </div>
       <div class="unidad-card-specs">
-        <span>📐 ${fmt(u.m2cub,2)} cub · ${fmt(u.m2hom,2)} hom</span>
+        <span>📐 ${fmt(u.m2cub,2)} cub · ${verM2Hom() ? fmt(u.m2hom,2) + ' hom' : fmt(m2TotalFisico(u),2) + ' tot'}</span>
         ${proyectoCfg().usaEdilia ? `<span>🏷 ${u.clase||u.claseEdilia||'—'}</span>` : ''}
       </div>
       ${proyectoCfg().usaEdilia ? `<div class="info-row"><span class="info-key">OA Final</span><span class="info-val">${u.oaFinal?fmt(u.oaFinal,1)+' llaves':'—'}</span></div>` : ''}
