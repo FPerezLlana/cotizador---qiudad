@@ -1880,7 +1880,7 @@
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Piso de anticipo + refuerzos. Si se sacan refuerzos, sube el anticipo para cubrirlo. Debe ser ≥ anticipo mínimo.</div>
       </div>
       <div class="form-group">
-        <label>Aportes hasta posesión (%)</label>
+        <label id="p-lbl-aportes">Aportes hasta posesión (%)</label>
         <input type="number" id="p-aportes-min-posesion" class="mono" value="20" step="1" min="0" max="100" oninput="leerParametrosDeUI()">
         <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Piso de lo aportado hasta la entrega inclusive (anticipo + refuerzos + cuotas de obra) sobre el precio. En todos los proyectos se evalúa: si el plan no llega, la fila se marca y la solicitud se bloquea.</div>
       </div>
@@ -1918,11 +1918,11 @@
       </div>
     </div>
     <div class="param-section">
-      <div class="param-section-title">Construcción y obra <span class="param-scope param-scope-proyecto"></span></div>
+      <div class="param-section-title" id="p-titulo-obra">Construcción y obra <span class="param-scope param-scope-proyecto"></span></div>
       <div class="form-group">
-        <label>Meses hasta fin de obra</label>
+        <label id="p-lbl-n-obra">Meses hasta fin de obra</label>
         <input type="number" id="p-n-obra-vigente" class="mono" value="36" step="1" min="1" oninput="leerParametrosDeUI()">
-        <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Define la longitud del plan de referencia y el corte obra/post-obra para opciones de financiación</div>
+        <div id="p-ayuda-n-obra" style="font-size:11px;color:var(--gray-500);margin-top:4px;">Define la longitud del plan de referencia y el corte obra/post-obra para opciones de financiación</div>
       </div>
       <div class="form-group" data-solo-edilia="1">
         <label>Descuento máximo cuota pura (%)</label>
@@ -1973,6 +1973,23 @@
       </label>
       <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
         <input type="checkbox" id="p-plan-240c" onchange="togglePlanVisible('240c', this.checked)"> 240 cuotas
+      </label>
+      <div style="font-size:11px; color:var(--gray-500); margin-top:10px; padding-top:10px; border-top:1px solid var(--gray-100);">
+        Cash siempre se muestra (base del modelo).
+      </div>
+    </div>
+    <!-- Planes visibles en proyectos no-Edilia (pendiente #34, 2026-10-29). La sección de
+         arriba es data-solo-edilia, así que en Sensum, Terrazas y Unidades Terminadas no había
+         forma de prender o apagar un plan desde la aplicación: había que tocar el código o el
+         documento de Firestore, y el código no alcanza porque el doc pisa `params` entero. -->
+    <div class="param-section" data-solo-no-edilia="1">
+      <div class="param-section-title">Planes visibles en cotizador <span class="param-scope param-scope-proyecto"></span></div>
+      <div style="font-size:12px; color:var(--gray-500); margin-bottom:12px;">Tildá qué planes querés que aparezcan en la comparativa que ven los vendedores.</div>
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+        <input type="checkbox" id="p-plan-ne-36c" onchange="togglePlanVisible('36c', this.checked)"> <span id="p-lbl-plan-ne-36c">Plan estándar</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+        <input type="checkbox" id="p-plan-ne-ext" onchange="togglePlanVisible('ext', this.checked)"> <span id="p-lbl-plan-ne-ext">Plan extendido</span>
       </label>
       <div style="font-size:11px; color:var(--gray-500); margin-top:10px; padding-top:10px; border-top:1px solid var(--gray-100);">
         Cash siempre se muestra (base del modelo).
@@ -2319,6 +2336,12 @@ const PLAZOS_FINANCIACION = [60, 120, 180, 240];
 // El MOTOR no lo aplica: calcPlanExtendido sigue aceptando cualquier nTotal > nObra, porque esto
 // es regla comercial y no invariante financiero (los tests J usan 37 y 40).
 const N_TOTAL_MIN = 36;
+// Un proyecto puede declarar el suyo en `cfg.nTotalMinimo` cuando 36 no aplica: Unidades
+// Terminadas vende hasta 24 cuotas, así que el piso general le quedaría por encima del techo.
+function nTotalMinimoDe(cfg) {
+  const v = ((cfg || proyectoCfg() || {}).nTotalMinimo);
+  return (typeof v === 'number' && v > 0) ? v : N_TOTAL_MIN;
+}
 // Paso de la grilla de plazos ofrecidos, en meses.
 const PASO_PLAZOS = 6;
 function defaultTnaObjMap() {
@@ -2539,16 +2562,32 @@ const PROYECTOS_DEFAULT = {
     // unidad que dice "+ cochera" se lee como que la cochera no está). Los otros proyectos
     // no declaran la bandera → la línea sigue saliendo igual que siempre.
     complementosSeparados: false,
+    // ── Entrega inmediata (2026-10-29) ──
+    // La posesión es AL BOLETO: la unidad está construida y se entrega al firmar. Por eso el
+    // corte de `nObraVigente` acá no es la posesión sino el fin del período sin interés: se le
+    // dan 6 cuotas para pagar al mismo precio y desde el mes 7 el saldo devenga.
+    // La matemática del motor es idéntica a la de un desarrollo en pozo —mismo tramo sin
+    // interés, mismo alemán después— pero el vocabulario no: "Posesión · cuota 6" sobre una
+    // unidad ya entregada es falso. Esta bandera gobierna las etiquetas de pantalla y documento
+    // (ver vocabPlazos) y hace que el cuadro no dibuje fila de hito en el mes 6.
+    entregaInmediata: true,
+    // Plazo mínimo propio: el piso general son 36 cuotas, que acá excede el máximo de 24.
+    nTotalMinimo: 12,
+    leyendaIntereses: 'A partir del mes {mes}, se cobrará un {tasa} % de interés sobre saldos.',
     params: {
-      antMinPct: 20, integracionMinPct: 50, antDefaultPct: 20,
+      // 50 % al boleto. El anticipo precargado es el mínimo: no hay margen de negociación abajo.
+      antMinPct: 50, integracionMinPct: 50, antDefaultPct: 50,
       aportesMinPosesionPct: 20,
-      nObraVigente: 1,
-      nTotalMax: 60,
+      // 6 meses sin interés. NO es duración de obra: ver `entregaInmediata`. Define además la
+      // longitud del plan estándar (50 % + 6 cuotas), que es la fila de referencia.
+      nObraVigente: 6,
+      nTotalMax: 24,
       tasaMensualSaldo: 1,
       refuerzosDefault: [],
       umbralObraM2: 1500,
       giaPct: 4,
-      planesVisibles: { '36c': false, 'ext': false },
+      // Contado + plan estándar (6 cuotas) + plan extendido (12 · 18 · 24).
+      planesVisibles: { '36c': true, 'ext': true },
     },
   },
 };
@@ -4118,7 +4157,42 @@ function leyendaInteresesTexto(plan, cfg) {
   const txt = ((cfg || proyectoCfg() || {}).leyendaIntereses || '');
   if (!txt) return '';
   const tasa = (plan && plan.tasaMensualSaldo != null) ? plan.tasaMensualSaldo : (params.tasaMensualSaldo ?? 0);
-  return txt.replace('{tasa}', fmt(tasa, 2));
+  // {mes} = primer mes que devenga interés. Del PLAN por la misma razón que la tasa: la
+  // solicitud reimpresa reconstruye el cuadro desde el nObra congelado, y el texto tiene que
+  // decir el mismo mes que los números que está al lado.
+  const nObra = (plan && plan.nObra != null) ? plan.nObra : (params.nObraVigente || 0);
+  return txt.replace('{tasa}', fmt(tasa, 2)).replace('{mes}', String(nObra + 1));
+}
+
+// ── Vocabulario de tramos por proyecto (2026-10-29) ──
+// `nObraVigente` marca un corte que significa cosas distintas según el proyecto. En un
+// desarrollo en pozo es la POSESIÓN: antes obra, después tenencia precaria. En uno de entrega
+// inmediata (`cfg.entregaInmediata`) la posesión es al boleto, y ese mismo corte marca otra
+// cosa: hasta ahí se paga al mismo precio, desde ahí el saldo devenga interés.
+// El motor no se entera —la matemática es idéntica— pero el papel sí. Un solo lugar decide
+// cómo se llama cada tramo, en vez de ocho condicionales repartidos por render y documentos.
+function vocabPlazos(cfg) {
+  const c = cfg || proyectoCfg() || {};
+  return c.entregaInmediata
+    ? { hito: null,                       // no hay hito intermedio que dibujar en el cuadro
+        referencia: 'sin interés',        // "en N cuotas ___"
+        tramos: 'sin interés · con interés (1ª – última)',
+        mesesLabel: 'Meses sin interés',
+        mesesAyuda: 'Define la longitud del plan estándar y desde qué mes el saldo empieza a devengar interés.',
+        aportesLabel: 'Aportes mínimos (%)' }
+    : { hito: 'Posesión',
+        referencia: 'durante la obra',
+        tramos: 'obra · post (1ª – última)',
+        mesesLabel: 'Meses hasta fin de obra',
+        mesesAyuda: 'Define la longitud del plan de referencia y el corte obra/post-obra para opciones de financiación',
+        aportesLabel: 'Aportes hasta posesión (%)' };
+}
+// Cómo se describe la financiación del saldo, en el vocabulario del proyecto.
+function fraseFinanciacion(tasa, nObra, cfg) {
+  const c = cfg || proyectoCfg() || {};
+  return c.entregaInmediata
+    ? `desde el mes ${(nObra || 0) + 1} el saldo devenga ${fmt(tasa ?? 0, 2)} % mensual, en cuotas decrecientes`
+    : `saldo a posesión financiado en cuotas decrecientes (${fmt(tasa ?? 0, 2)} % mensual sobre saldo)`;
 }
 // Detalle de superficies de una unidad según las superficies DECLARADAS por el proyecto
 // (cfg.superficies), no un set fijo de Qiudad: Sensum muestra su terraza, Terrazas su descubierto.
@@ -4147,6 +4221,10 @@ function detalleSuperficieUnidad(u, cfg) {
 // plan.cuotaObra del paquete (J7: el paquete es la suma) — NO recalcula el motor.
 function cuadroMarchaHTML(plan, opts) {
   if (!plan || !Array.isArray(plan.cuadro) || plan.degenerado) return '';
+  // Config del proyecto del DOCUMENTO, no del activo: la solicitud se reimprime desde la
+  // bandeja parado en cualquier proyecto (invariante index_87). Sin esto, una de Unidades
+  // Terminadas reimpresa desde Qiudad saldría hablando de obra y posesión.
+  const cfgDoc = (opts && opts.cfg) || proyectoCfg();
   // ── LIBRO ENTERO (2026-10-29) ──
   // El cuadro mezclaba dos mundos: imprimía la cuota redondeada (`f(cuotaObra)`) mientras el
   // acumulado avanzaba con el valor EXACTO. A los catorce meses de obra el acumulado ya estaba
@@ -4196,27 +4274,34 @@ function cuadroMarchaHTML(plan, opts) {
   // la fila mostraba amortización 14.500 y pago 15.676, contradiciendo la regla del pie
   // (pago = amortización + interés). Ahora el período corre hasta el mes anterior y cada fila
   // de hito es autosuficiente: Cuota + Refuerzo = Amortización = Pago del mes.
+  // `hitoLabel` es null en los proyectos de entrega inmediata: ahí el mes nObra no es ningún
+  // hito —la posesión fue al boleto— sino el último mes sin interés, así que entra en el
+  // período agrupado como cualquier otro y no lleva fila propia.
+  const hitoLabel = vocabPlazos(cfgDoc).hito;
   let m = 1;
   while (m <= nObra) {
-    // Próximo hito: el primer mes con refuerzo, o la posesión.
-    let hito = m;
-    while (hito < nObra && !refEnMes(hito)) hito++;
-    // Período de cuotas simples: m .. hito−1 (puede quedar vacío si el hito es el propio m)
-    if (hito > m) {
-      const n = hito - m, ult = hito - 1;
+    // Próximo corte: el primer mes con refuerzo, o el hito final si el proyecto lo marca.
+    let corte = m;
+    while (corte < nObra && !refEnMes(corte)) corte++;
+    const ref = refEnMes(corte);
+    const esHitoFinal = (corte === nObra) && !!hitoLabel;
+    // Sin refuerzo ni hito que marcar, el mes del corte entra en el período.
+    const finPeriodo = (ref || esHitoFinal) ? corte - 1 : corte;
+    if (finPeriodo >= m) {
+      const n = finPeriodo - m + 1;
       acum += cuotaObra * n; sumA += cuotaObra * n; sumCuotas += cuotaObra * n;
-      filas.push(`<tr><td>${n > 1 ? m + '–' + ult : m}</td><td>${n > 1 ? 'Cuotas ' + m + ' a ' + ult : 'Cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td>${f(cuotaObra)}</td><td>${f(acum)}</td></tr>`);
+      filas.push(`<tr><td>${n > 1 ? m + '–' + finPeriodo : m}</td><td>${n > 1 ? 'Cuotas ' + m + ' a ' + finPeriodo : 'Cuota ' + m}</td><td>${f(cuotaObra)}</td><td></td><td></td><td>${f(cuotaObra)}</td><td>${f(cuotaObra)}</td><td>${f(acum)}</td></tr>`);
     }
-    // Fila del hito: el mes entero
-    const ref = refEnMes(hito);
-    const esPos = hito === nObra;
-    const amort = cuotaObra + ref;
-    acum += amort; sumRef += ref; sumA += amort; sumCuotas += cuotaObra;
-    const etiqueta = esPos
-      ? (ref ? 'Posesión · cuota ' + hito + ' y refuerzo' : 'Posesión · cuota ' + hito)
-      : 'Cuota ' + hito + ' y refuerzo';
-    filas.push(`<tr class="minuta-row-hito"><td>${hito}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${ref ? f(ref) : ''}</td><td></td><td>${f(amort)}</td><td>${f(amort)}</td><td>${f(acum)}</td></tr>`);
-    m = hito + 1;
+    if (ref || esHitoFinal) {
+      // Fila del corte: el mes entero (cuota + refuerzo), autosuficiente.
+      const amort = cuotaObra + ref;
+      acum += amort; sumRef += ref; sumA += amort; sumCuotas += cuotaObra;
+      const etiqueta = esHitoFinal
+        ? (ref ? hitoLabel + ' · cuota ' + corte + ' y refuerzo' : hitoLabel + ' · cuota ' + corte)
+        : 'Cuota ' + corte + ' y refuerzo';
+      filas.push(`<tr class="minuta-row-hito"><td>${corte}</td><td>${etiqueta}</td><td>${f(cuotaObra)}</td><td>${ref ? f(ref) : ''}</td><td></td><td>${f(amort)}</td><td>${f(amort)}</td><td>${f(acum)}</td></tr>`);
+    }
+    m = corte + 1;
   }
   // Financiación. El loop ahora dibuja también los refuerzos POSTERIORES a la posesión: antes
   // ignoraba `plan.refuerzos` por completo, así que un refuerzo del mes 24 era invisible en el
@@ -4244,10 +4329,10 @@ function cuadroMarchaHTML(plan, opts) {
   // no la declaran conservan la bajada descriptiva.
   const leyenda = (opts && opts.leyendaIntereses) || '';
   const bajada = leyenda
-    || `Anticipo en la firma · ${plan.nTotal} cuotas de capital iguales · los refuerzos se pagan en su mes, incluidos los posteriores a la posesión · sobre el saldo pendiente desde la posesión se devenga un ${fmt(plan.tasaMensualSaldo, 2)} % mensual, que se paga y no se capitaliza. Valores en USD.`;
+    || `Anticipo en la firma · ${plan.nTotal} cuotas de capital iguales · ${fraseFinanciacion(plan.tasaMensualSaldo, nObra, cfgDoc)}. Valores en USD.`;
   return `
       <div class="minuta-seccion minuta-cuadro-marcha">
-        <div class="minuta-seccion-titulo">Ejemplo plan de pago completo con entrega en el mes ${nObra}
+        <div class="minuta-seccion-titulo">${vocabPlazos(cfgDoc).hito ? 'Ejemplo plan de pago completo con entrega en el mes ' + nObra : 'Plan de pago completo — ' + plan.nTotal + ' cuotas'}
           <span class="minuta-seccion-sub">${bajada}</span>
         </div>
         <table class="minuta-tabla minuta-tabla-cuadro">
@@ -4476,7 +4561,7 @@ function generarMinuta() {
           <div>
             <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#6b8268;margin-bottom:4px;">${labelPrecioMinuta}</div>
             <div style="font-family:var(--brand-font-display);font-size:26px;color:var(--brand-dark);line-height:1;">${fmtUSD(total36cUSD)}</div>
-            <div style="font-size:11px;color:#6b8268;margin-top:4px;">en ${params.nObraVigente} cuotas durante la obra</div>
+            <div style="font-size:11px;color:#6b8268;margin-top:4px;">en ${params.nObraVigente} cuotas ${vocabPlazos().referencia}</div>
             ${hayPaquete && Array.isArray(plan36data.subPlanes) && plan36data.subPlanes.length > 1 ? `
             <div style="margin-top:8px;font-size:11px;font-family:'DM Mono',monospace;color:var(--brand-dark);">${plan36data.subPlanes.map(sp => {
               const nm = labelComponentePaquete(sp.unidad, false);   // index_93: el tipo real ('Cochera XL')
@@ -4499,7 +4584,7 @@ function generarMinuta() {
             <tr>
               <th>Plan</th>
               <th>Anticipo</th>
-              <th>Cuota${proyectoCfg().usaEdilia ? '' : ' <span class="minuta-th-sub">obra · post (1ª – última)</span>'}</th>
+              <th>Cuota${proyectoCfg().usaEdilia ? '' : ' <span class="minuta-th-sub">' + vocabPlazos().tramos + '</span>'}</th>
               <th>Refuerzos</th>
             </tr>
           </thead>
@@ -5098,7 +5183,7 @@ function generarSolicitudReservaPDF(docData) {
       cuotaObra: plan.cuotaObraUSD, saldo: plan.saldoFinanciadoUSD, totalUSD: plan.totalUSD,
     };
     paginaPlanCompleto = `
-      ${cuadroMarchaHTML(planParaCuadro, { leyendaIntereses: doc.leyendaIntereses || '' })}
+      ${cuadroMarchaHTML(planParaCuadro, { leyendaIntereses: doc.leyendaIntereses || '', cfg: proyectoCfg(proyectoId) })}
       ${bloqueFirmas}`;
   }
 
@@ -6034,7 +6119,7 @@ function renderCotizador(u) {
               // plan más corto que la obra. Con obra de 36 (Sensum) el piso sigue dando 42 y el
               // selector no cambia; con obra de 14 (Terrazas) arranca en 36, que además es lo que
               // garantiza que un refuerzo en el mes 24 siempre entre en el plan.
-              const piso = Math.max(N_TOTAL_MIN, nO + PASO_PLAZOS);
+              const piso = Math.max(nTotalMinimoDe(), nO + PASO_PLAZOS);
               const nSel = Math.min(nM, Math.max(piso, planState.nTotal || nM));
               const opciones = [];
               // Múltiplos de PASO_PLAZOS desde el piso, no nObra + 6k: con nObra 14 esa fórmula
@@ -6048,7 +6133,7 @@ function renderCotizador(u) {
               return opciones.map(n => `<option value="${n}" ${n === nSel ? 'selected' : ''}>${n} cuotas</option>`).join('');
             })()}
           </select>
-          <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Hasta ${params.nTotalMax} cuotas. El saldo a posesión se financia en cuotas decrecientes (${fmt(params.tasaMensualSaldo ?? 0, 2)} % mensual sobre saldo).</div>
+          <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Hasta ${params.nTotalMax} cuotas. ${fraseFinanciacion(params.tasaMensualSaldo, params.nObraVigente).replace(/^d/, 'D')}.</div>
         </div>` : ''}
       </div>
     </div>` : ''}
@@ -6101,7 +6186,7 @@ function renderCotizador(u) {
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--gray-500);margin-bottom:6px;">${labelPrecio}</div>
           <div style="font-family:var(--brand-font-display);font-size:32px;color:var(--brand-dark);letter-spacing:-0.02em;line-height:1;">${fmtUSD(sumaRefPaquete)}</div>
-          <div style="font-size:12px;color:var(--gray-500);margin-top:6px;">en ${params.nObraVigente} cuotas durante la obra</div>
+          <div style="font-size:12px;color:var(--gray-500);margin-top:6px;">en ${params.nObraVigente} cuotas ${vocabPlazos().referencia}</div>
           ${hayPaquete && Array.isArray(p36.subPlanes) && p36.subPlanes.length > 1 ? `
           <div style="margin-top:10px;font-size:12px;font-family:'DM Mono',monospace;color:var(--brand-dark);">${p36.subPlanes.map(sp => {
             const nm = labelComponentePaquete(sp.unidad, false);   // index_93: el tipo real ('Cochera XL')
@@ -6136,7 +6221,7 @@ function renderCotizador(u) {
               <th>Desc. Edilia</th>
               <th>GA inicial</th>
               <th>TNA result.</th>` : `
-              <th style="text-align:right;">Rec. obra<br><span style="font-weight:400;font-size:10px;">USD/m²</span></th>
+              <th style="text-align:right;">${vocabPlazos().recaudLabel}<br><span style="font-weight:400;font-size:10px;">USD/m²</span></th>
               <th style="text-align:right;">Saldo financiado</th>
               <th style="text-align:right;">Intereses</th>
               <th style="text-align:right;">Total</th>`) : ''}
@@ -6189,7 +6274,7 @@ function renderCotizador(u) {
             const tasaExt = params.tasaMensualSaldo ?? 0;
             const tbodyExt = filasExt.length > 0 ? `
               <tbody>
-                <tr><td colspan="${colspan}" style="${subHeaderStyle}">Plan extendido · en USD<span style="${subHeaderExtraStyle}"> — saldo a posesión financiado en cuotas decrecientes (${fmt(tasaExt, 2)} % mensual sobre saldo)</span></td></tr>
+                <tr><td colspan="${colspan}" style="${subHeaderStyle}">Plan extendido · en USD<span style="${subHeaderExtraStyle}"> — ${fraseFinanciacion(tasaExt, params.nObraVigente)}</span></td></tr>
                 ${filasExt.join('')}
               </tbody>` : '';
 
@@ -7275,7 +7360,7 @@ function leerParametrosDeUI() {
   // El tope no puede quedar por debajo del piso del selector (2026-10-29): si lo hiciera, el
   // vendedor vería ofrecido un plan más corto que la duración mínima declarada.
   { const el = document.getElementById('p-ntotal-max'); const v = el ? parseInt(el.value) : NaN;
-    if (isFinite(v)) params.nTotalMax = Math.max((params.nObraVigente || 0) + 1, N_TOTAL_MIN, v); }
+    if (isFinite(v)) params.nTotalMax = Math.max((params.nObraVigente || 0) + 1, nTotalMinimoDe(), v); }
   { const el = document.getElementById('p-tasa-mensual-saldo'); const v = el ? parseFloat(el.value) : NaN;
     if (isFinite(v)) params.tasaMensualSaldo = Math.max(0, v); }
   params.descMax     = parseFloat(document.getElementById('p-desc-max').value) || 30;
@@ -7401,6 +7486,22 @@ function cargarParametrosEnUI() {
   set('p-gia-pct',         params.giaPct        ?? 4);
   // Checkboxes de planes visibles (defaults: 36/60/120 on; 180/240 off)
   const pv = params.planesVisibles || {};
+  // Vocabulario del panel según el proyecto (2026-10-29): en los de entrega inmediata el corte
+  // de nObraVigente no es la posesión sino el fin del período sin interés, y rotularlo "fin de
+  // obra" llevaría a configurarlo mal.
+  { const voc = vocabPlazos();
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set('p-lbl-n-obra', voc.mesesLabel);
+    set('p-ayuda-n-obra', voc.mesesAyuda);
+    set('p-lbl-aportes', voc.aportesLabel);
+    const t = document.getElementById('p-titulo-obra');
+    if (t) t.childNodes[0].nodeValue = (voc.hito ? 'Construcción y obra ' : 'Plazos y financiación ');
+    // Las dos casillas de la rama no-Edilia se rotulan con los plazos reales del proyecto.
+    set('p-lbl-plan-ne-36c', 'Plan estándar · ' + (params.nObraVigente || 0) + ' cuotas' + (voc.hito ? '' : ' sin interés'));
+    set('p-lbl-plan-ne-ext', 'Plan extendido · hasta ' + (params.nTotalMax || 0) + ' cuotas');
+  }
+  setCheck('p-plan-ne-36c', pv['36c'] ?? true);
+  setCheck('p-plan-ne-ext', pv['ext'] ?? true);
   setCheck('p-plan-36c',  pv['36c']  ?? true);
   setCheck('p-plan-60c',  pv['60c']  ?? true);
   setCheck('p-plan-120c', pv['120c'] ?? true);
@@ -10444,27 +10545,56 @@ document.addEventListener('DOMContentLoaded', () => {
     return errores.length === 0 ? true : errores.join(' | ');
   });
 
-  test('T1', 1, 'Unidades Terminadas: planesVisibles apaga referencia y extendido (solo contado) y el fallback "?? true" no se lo prende; los otros proyectos conservan sus planes (index_92)', () => {
+  test('T1', 1, 'Unidades Terminadas: contado + plan estándar + extendido; entrega inmediata (sin hito de posesión), piso de plazo propio y el fallback "?? true" no toca a los otros proyectos', () => {
     const errores = [];
     const proyPrev = proyectoActivo;
     try {
-      // La config declarada apaga los dos planes de la rama no-Edilia…
-      const pvDecl = (PROYECTOS_DEFAULT.terminadas.params.planesVisibles) || {};
-      if (pvDecl['36c'] !== false) errores.push('36c no viene apagado en la config');
-      if (pvDecl['ext'] !== false) errores.push('ext no viene apagado en la config');
-      // …y migrarParams no se los prende (solo rellena las claves Edilia).
-      const pMig = JSON.parse(JSON.stringify(PROYECTOS_DEFAULT.terminadas.params));
+      const cfgT = PROYECTOS_DEFAULT.terminadas;
+      const pvDecl = (cfgT.params.planesVisibles) || {};
+      // 2026-10-29: el proyecto deja de ser solo contado. 50 % al boleto + 6 cuotas sin interés
+      // (plan estándar = fila de referencia) y extendido hasta 24 con 1 % desde el mes 7.
+      if (pvDecl['36c'] !== true) errores.push('36c debería venir prendido');
+      if (pvDecl['ext'] !== true) errores.push('ext debería venir prendido');
+      if (cfgT.params.nObraVigente !== 6) errores.push('nObraVigente ≠ 6 (meses sin interés)');
+      if (cfgT.params.nTotalMax !== 24) errores.push('nTotalMax ≠ 24');
+      if (cfgT.params.antMinPct !== 50 || cfgT.params.antDefaultPct !== 50) errores.push('anticipo ≠ 50 %');
+      if (cfgT.entregaInmediata !== true) errores.push('falta entregaInmediata');
+      if (cfgT.usaEdilia !== false) errores.push('terminadas no debería usar Edilia');
+      if (!(cfgT.tiposUnidad || []).includes('Departamento + Cochera')) errores.push('falta el tipo "Departamento + Cochera"');
+      // migrarParams no debe pisar lo declarado
+      const pMig = JSON.parse(JSON.stringify(cfgT.params));
       migrarParams(pMig);
-      if (pMig.planesVisibles['36c'] !== false) errores.push('migrarParams prendió 36c');
-      if (pMig.planesVisibles['ext'] !== false) errores.push('migrarParams prendió ext');
-      if (PROYECTOS_DEFAULT.terminadas.usaEdilia !== false) errores.push('terminadas no debería usar Edilia');
-      if (!(PROYECTOS_DEFAULT.terminadas.tiposUnidad || []).includes('Departamento + Cochera')) {
-        errores.push('falta el tipo "Departamento + Cochera"');
-      }
-      // El registro de planes devuelve SOLO contado parado en terminadas…
+      if (pMig.planesVisibles['36c'] !== true || pMig.planesVisibles['ext'] !== true) errores.push('migrarParams pisó planesVisibles');
+      // El registro de planes devuelve los tres…
       cambiarProyecto('terminadas', true);
-      const keysT = planesDelProyecto({ nTotal: 60 }).map(r => r.key);
-      if (keysT.length !== 1 || keysT[0] !== 'cash') errores.push('terminadas → ' + keysT.join(','));
+      const keysT = planesDelProyecto({ nTotal: 24 }).map(r => r.key);
+      ['cash', '36c', 'ext'].forEach(k => { if (!keysT.includes(k)) errores.push('terminadas sin ' + k); });
+      // …el piso de plazo es el del proyecto (12), no el general de 36, que excedería su techo
+      if (nTotalMinimoDe() !== 12) errores.push('piso de plazo ' + nTotalMinimoDe() + ' ≠ 12');
+      if (nTotalMinimoDe(PROYECTOS_DEFAULT.terrazas) !== N_TOTAL_MIN) errores.push('terrazas debería usar el piso general');
+      // …el vocabulario no habla de obra ni de posesión…
+      const voc = vocabPlazos();
+      if (voc.hito !== null) errores.push('entrega inmediata no debería tener hito');
+      if (/obra|posesión/i.test(voc.referencia + voc.tramos + voc.mesesLabel)) errores.push('vocabulario con obra/posesión: ' + voc.referencia);
+      if (!/desde el mes 7/.test(fraseFinanciacion(1, 6))) errores.push('frase de financiación sin el mes 7');
+      // …y el motor arranca a devengar en el mes 7, con la cuota igual todos los meses.
+      const uT = { codigo: 'UT 1', precioReferencia: 150000, precioCash: 142500, m2hom: 70, estado: 'disponible' };
+      const pExt = calcPlanExtendido(uT, 75000, [], 0, 24);
+      if (!aprox(pExt.cuotaObra, 3125, TOL_USD)) errores.push('cuota ' + pExt.cuotaObra.toFixed(2) + ' ≠ 3125');
+      if (!aprox(pExt.amortizacion, pExt.cuotaObra, TOL_USD)) errores.push('amortización ≠ cuota');
+      if (pExt.cuadro[0].mes !== 7) errores.push('el interés arranca en el mes ' + pExt.cuadro[0].mes + ', no en el 7');
+      if (!aprox(pExt.totalIntereses, 5343.75, TOL_USD)) errores.push('intereses ' + pExt.totalIntereses.toFixed(2) + ' ≠ 5343,75');
+      if (!aprox(pExt.cuadro[pExt.cuadro.length - 1].saldoFinal, 0, TOL_USD)) errores.push('el saldo no cierra en 0');
+      // El plan estándar son nObra cuotas sin interés: total = precio exacto.
+      const pStd = calcPlan36(uT, 75000, [], 0);
+      if (!aprox(pStd.totalUSD, 150000, TOL_USD)) errores.push('plan estándar total ' + pStd.totalUSD.toFixed(2));
+      if (!aprox(pStd.cuotaObra, 12500, TOL_USD)) errores.push('plan estándar cuota ' + pStd.cuotaObra.toFixed(2));
+      // El cuadro NO dibuja fila de posesión en el mes 6: no hay hito, la unidad ya se entregó.
+      const htmlT = cuadroMarchaHTML(pExt, {});
+      if (/Posesión/.test(htmlT)) errores.push('el cuadro dibuja una fila de posesión');
+      if (!/Cuotas 1 a 6/.test(htmlT)) errores.push('los 6 meses sin interés no quedaron en un solo período');
+      if (!/Plan de pago completo — 24 cuotas/.test(htmlT)) errores.push('título con entrega: ' + (htmlT.match(/seccion-titulo">([^<]*)/) || [])[1]);
+      if (!/A partir del mes 7, se cobrará un 1,00 % de interés sobre saldos/.test(cuadroMarchaHTML(pExt, { leyendaIntereses: leyendaInteresesTexto(pExt, cfgT) }))) errores.push('leyenda de intereses mal resuelta');
       // …y el fallback "?? true" de la rama no-Edilia no le saca el extendido a los otros.
       cambiarProyecto('sensum', true);
       const keysS = planesDelProyecto({ nTotal: 60 }).map(r => r.key);
